@@ -6,7 +6,7 @@ multi-protocol system works.
 
 First, the module definition and imports.
 
-> {-# LANGUAGE RankNTypes #-}
+> {-# LANGUAGE RankNTypes, MultiParamTypeClasses, FunctionalDependencies #-}
 > module ChatCore.Protocol where
 > 
 > import Data.Conduit
@@ -24,15 +24,13 @@ translation layer between Chat Core's own "internal protocol" of function calls
 and the protocols of the outside world (e.g. IRC, QuasselCore, etc).
     
 The `CoreType` typeclass represents a specific type of IRC core protocol. It
-contains some information about the protocol (such as its name), function which
-listens for connections.
+contains some information about the protocol (such as its name) and a function
+which listens for connections.
 
 The `CoreProtocol` typeclass implements a connection for a specific protocol.
 All `CoreProtocol` instances are created and initialized by a `CoreType`'s
-connection source. It is possible to have a `CoreType` which can create
-multiple different `CoreProtocol` types. This can (and should) be used to
-implement protocols which have wildly different protocol "types" that are only
-decided upon after a handshake.
+connection source. Any given `CoreType` will only create one specific
+`CoreProtocol` type.
 
 
 The `CoreType` Class
@@ -51,12 +49,17 @@ passing in a function to initialize the connection. Initialization should not
 be done in the listener function's thread, as initialization may require doing
 things that aren't thread-safe.
 
-> type ConnectionSource = (CoreProtocol conn) => Source IO (IO conn)
+> type ConnectionSource conn = (CoreProtocol conn) => Source IO (IO conn)
 > 
-> class CoreType ctype where
+> class CoreProtocol conn => CoreType ctype conn where
 >     coreTypeName :: ctype -> T.Text
 >     coreTypeDesc :: ctype -> T.Text
->     connectionListener :: ctype -> ConnectionSource
+>     connectionListener :: ctype -> ConnectionSource conn
+
+This function hides the fact that the connection listener is a conduit source.
+
+> newConnection :: (CoreProtocol conn) => IO conn -> ConnectionSource conn
+> newConnection connAction = yield connAction
 
 
 The `CoreProtocol` Class
