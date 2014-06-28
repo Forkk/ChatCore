@@ -15,8 +15,9 @@ import qualified Data.Text as T
 import Network
 import System.IO
 
-import ChatCore.Protocol
 import ChatCore.Events
+import ChatCore.Protocol
+import ChatCore.Types
 
 jsonCoreType :: JSONCoreType
 jsonCoreType = JSONCoreType { jsonCorePort = PortNumber 1337 }
@@ -66,6 +67,6 @@ instance CoreProtocol JSONConnection where
 -- JSON Parsing
 instance FromJSON ClientEvent where
     parseJSON _ = do
-        return $ SendMessage "#channel" "This is a placeholder."
+        return $ SendMessage (DestChan "#channel") "This is a placeholder."
 
 

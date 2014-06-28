@@ -51,15 +51,21 @@ executable chatcore
 
   -- Modules included in this executable, other than Main.
   other-modules:
-      ChatCore.Protocol
+      ChatCore.Types
+
+    , ChatCore.Protocol
     , ChatCore.Protocol.JSON
+
+    , ChatCore.NetworkController
 
     , ChatCore.Events
 
+  default-extensions:
+      OverloadedStrings
+
   -- LANGUAGE extensions used by modules in this package.
   other-extensions:
-      OverloadedStrings
-    , RankNTypes
+      RankNTypes
 
   -- Other library packages from which modules are imported.
   build-depends:
@@ -67,6 +73,7 @@ executable chatcore
     , text              >=1.1   && <1.2
     , bytestring        >=0.10  && <0.11
     , mtl               >=2.2   && <2.3
+    , transformers      >=0.4   && <0.5
     , conduit           >=1.1   && <1.2
     , network           >=2.5   && <2.6
     , aeson             >=0.7   && <0.8
@@ -74,3 +81,4 @@ executable chatcore
   -- Base language which the package is written in.
   default-language: Haskell2010
   
+
