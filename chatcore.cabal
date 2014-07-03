@@ -66,6 +66,7 @@ executable chatcore
   -- LANGUAGE extensions used by modules in this package.
   other-extensions:
       RankNTypes
+    , Rank2Types
 
   -- Other library packages from which modules are imported.
   build-depends:

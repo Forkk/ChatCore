@@ -2,6 +2,8 @@ module ChatCore.Types where
 
 import qualified Data.Text as T
 
+type ChatNetworkId = T.Text
+
 -- | Represents a message destination. This can be either a channel or a user.
 data ChatDest = DestUser Nick | DestChan ChatChan
 
