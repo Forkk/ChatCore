@@ -1,5 +1,6 @@
 module Main where
 
+import ChatCore.UserController
 import ChatCore.NetworkController
 import ChatCore.Events
 import ChatCore.Protocol

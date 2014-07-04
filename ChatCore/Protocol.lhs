@@ -108,3 +108,13 @@ core events into messages that the client can understand.
 >     -- | Takes a `CoreEvent` and sends the appropriate message to the client.
 >     sendEvent       :: conn -> CoreEvent -> IO ()
 
+
+A Wrapper Type
+--------------
+
+In order to keep all of a user's connections in a list, they must all be
+wrapped in a single data type.
+
+> data ClientConnection where
+>     ClientConnection :: CoreProtocol conn => conn -> ClientConnection
+
