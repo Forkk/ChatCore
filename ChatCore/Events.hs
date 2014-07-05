@@ -39,4 +39,3 @@ data CoreEvent =
         , recvMsgContent    :: T.Text           -- The content of the message.
         }
 
-
