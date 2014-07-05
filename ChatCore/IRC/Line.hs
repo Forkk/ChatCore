@@ -6,10 +6,6 @@ module ChatCore.IRC.Line
 
     , parseLine
 
-    , lineParser
-    , segment
-    , sourceString
-
     , lineParserTests
     ) where
 
