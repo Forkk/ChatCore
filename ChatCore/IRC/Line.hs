@@ -1,19 +1,29 @@
 -- Module containing functions and data types for parsing lines from IRC.
 module ChatCore.IRC.Line
-    ( IRCLine
+    ( IRCLine (IRCLine)
     , IRCSource
-    , IRCCommand
+    , IRCCommand (IRCCommand)
+
+    , ilSourceStr
+    , ilCommand
+    , ilArgs
+    , ilBody
 
     , parseLine
+    , lineToByteString
 
     , lineParserTests
     ) where
 
 import Control.Monad
 import Control.Applicative ((<$>), (<*>))
+import Data.Monoid
 import qualified Data.Text as T
+import qualified Data.Text.Lazy.Builder as TL
 import qualified Data.Text.Encoding as T
+import qualified Data.Text.Lazy.Encoding as TL
 import qualified Data.ByteString as B
+import qualified Data.ByteString.Lazy as BL
 import Text.Parsec
 import Text.Parsec.ByteString
 import Test.HUnit
@@ -30,7 +40,7 @@ type IRCArgument = T.Text
 type IRCBody = T.Text
 
 -- | Represents the 'command' part of an IRC line.
-data IRCCommand = IRCCommand T.Text deriving (Show, Eq)
+data IRCCommand = IRCCommand { icCmd :: T.Text } deriving (Show, Eq)
 
 
 -- | Represents a line in the IRC protocol.
@@ -42,70 +52,12 @@ data IRCLine = IRCLine
     } deriving (Show, Eq)
 
 -- | Parses the given text to an IRC line structure.
-parseLine :: B.ByteString -> Maybe IRCLine
-parseLine str = Nothing
+parseLine :: B.ByteString -> Either ParseError IRCLine
+parseLine str = parse lineParser "" str
 
 -- }}}
-
 
 -- {{{ Parsers
-
--- {{{ Tests
-
-assertParsed :: (Eq a) => String -> B.ByteString -> Parser a -> a -> Assertion
-assertParsed failMsg testData parser expected = do
-    either (\_   -> assertFailure failMsg)
-           (\val -> unless (val == expected) (assertFailure failMsg))
-           result
-  where result = parse parser "" testData
-
-lineParserTests = TestList [lineParserTest1, lineParserTest2, lineParserTest3, lineParserTest4]
-
-lineParserTest1 = TestCase (assertParsed "parse line with arguments, source, and body"
-    ":Forkk!~forkk@awesome/forkk PRIVMSG #channel :test body content"
-    lineParser
-    IRCLine
-        { ilSourceStr   = Just "Forkk!~forkk@awesome/forkk"
-        , ilCommand     = IRCCommand "PRIVMSG"
-        , ilArgs        = ["#channel"]
-        , ilBody        = Just "test body content"
-        }
-    )
-
-lineParserTest2 = TestCase (assertParsed "parse line with arguments and body, but no source"
-    "PRIVMSG #channel :test body content"
-    lineParser
-    IRCLine
-        { ilSourceStr   = Nothing
-        , ilCommand     = IRCCommand "PRIVMSG"
-        , ilArgs        = ["#channel"]
-        , ilBody        = Just "test body content"
-        }
-    )
-
-lineParserTest3 = TestCase (assertParsed "parse line with source and body, but no arguments"
-    ":Forkk!~forkk@awesome/forkk PRIVMSG :test body content"
-    lineParser
-    IRCLine
-        { ilSourceStr   = Just "Forkk!~forkk@awesome/forkk"
-        , ilCommand     = IRCCommand "PRIVMSG"
-        , ilArgs        = []
-        , ilBody        = Just "test body content"
-        }
-    )
-
-lineParserTest4 = TestCase (assertParsed "parse line with source and arguments, but no body"
-    ":Forkk!~forkk@awesome/forkk PRIVMSG #channel"
-    lineParser
-    IRCLine
-        { ilSourceStr   = Just "Forkk!~forkk@awesome/forkk"
-        , ilCommand     = IRCCommand "PRIVMSG"
-        , ilArgs        = ["#channel"]
-        , ilBody        = Nothing
-        }
-    )
-
--- }}}
 
 -- | Parsec parser for IRC lines.
 lineParser :: Parser IRCLine
@@ -166,6 +118,81 @@ body = do
     char ':'
     -- Read the body until the end of the line.
     T.pack <$> manyTill anyChar eof
+
+-- }}}
+
+-- {{{ To ByteString
+
+-- | Serialize the given line structure to a strict bytestring.
+lineToByteString :: IRCLine -> B.ByteString
+lineToByteString line = BL.toStrict $ TL.encodeUtf8 $ TL.toLazyText $ lineTextBuilder line
+
+lineTextBuilder :: IRCLine -> TL.Builder
+lineTextBuilder line =
+       maybe mempty (\t -> TL.singleton ':' <> textAndSpace t) (ilSourceStr line)
+    <> (TL.fromText $ icCmd $ ilCommand line)
+    <> (mconcat $ map spaceAndText $ ilArgs line)
+    <> maybe mempty (\t -> TL.fromText " :" <> TL.fromText t) (ilBody line)
+  where
+    textAndSpace text = TL.fromText text <> TL.singleton ' '
+    spaceAndText text = TL.singleton ' ' <> TL.fromText text 
+
+-- }}}
+
+-- {{{ Tests
+
+assertParsed :: (Eq a, Show a) => String -> B.ByteString -> Parser a -> a -> Assertion
+assertParsed name testData parser expected = do
+    either (assertFailure . parseErrMsg)
+           (\val -> unless (val == expected) (assertFailure $ wrongValMsg val))
+           result
+  where
+    result = parse parser "" testData
+    parseErrMsg err = "'" ++ name ++ "' failed to parse with the following error:\n" ++ show err
+    wrongValMsg val = "'" ++ name ++ "' parsed to an unexpected value:\n" ++ show val
+
+ircLineTestCase msg str line = TestList
+    [ TestCase (assertParsed msg str lineParser line)
+    , TestCase (assertEqual (msg ++ " line to text") (lineToByteString line) str)
+    ]
+
+lineParserTests = TestList [lineParserTest1, lineParserTest2, lineParserTest3, lineParserTest4]
+
+lineParserTest1 = ircLineTestCase "parse line with arguments, source, and body"
+    ":Forkk!~forkk@awesome/forkk PRIVMSG #channel :test body content"
+    IRCLine
+        { ilSourceStr   = Just "Forkk!~forkk@awesome/forkk"
+        , ilCommand     = IRCCommand "PRIVMSG"
+        , ilArgs        = ["#channel"]
+        , ilBody        = Just "test body content"
+        }
+
+lineParserTest2 = ircLineTestCase "parse line with arguments and body, but no source"
+    "PRIVMSG #channel :test body content"
+    IRCLine
+        { ilSourceStr   = Nothing
+        , ilCommand     = IRCCommand "PRIVMSG"
+        , ilArgs        = ["#channel"]
+        , ilBody        = Just "test body content"
+        }
+
+lineParserTest3 = ircLineTestCase "parse line with source and body, but no arguments"
+    ":Forkk!~forkk@awesome/forkk PRIVMSG :test body content"
+    IRCLine
+        { ilSourceStr   = Just "Forkk!~forkk@awesome/forkk"
+        , ilCommand     = IRCCommand "PRIVMSG"
+        , ilArgs        = []
+        , ilBody        = Just "test body content"
+        }
+
+lineParserTest4 = ircLineTestCase "parse line with source and arguments, but no body"
+    ":Forkk!~forkk@awesome/forkk PRIVMSG #channel"
+    IRCLine
+        { ilSourceStr   = Just "Forkk!~forkk@awesome/forkk"
+        , ilCommand     = IRCCommand "PRIVMSG"
+        , ilArgs        = ["#channel"]
+        , ilBody        = Nothing
+        }
 
 -- }}}
 
