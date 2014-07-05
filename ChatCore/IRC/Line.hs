@@ -127,6 +127,7 @@ body = do
 lineToByteString :: IRCLine -> B.ByteString
 lineToByteString line = BL.toStrict $ TL.encodeUtf8 $ TL.toLazyText $ lineTextBuilder line
 
+-- FIXME: Don't allow newlines anywhere in the line.
 lineTextBuilder :: IRCLine -> TL.Builder
 lineTextBuilder line =
        maybe mempty (\t -> TL.singleton ':' <> textAndSpace t) (ilSourceStr line)

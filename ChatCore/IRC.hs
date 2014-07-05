@@ -1,14 +1,20 @@
 module ChatCore.IRC where
 
+import Control.Applicative
 import Control.Monad.STM
 import Control.Concurrent (ThreadId, forkIO)
 import Control.Concurrent.STM.TMChan
 import Control.Monad.Trans
 import Control.Monad.Trans.State
+import Control.Error.Util
+import Data.Maybe
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
+import qualified Data.ByteString as B
+import qualified Data.ByteString.Char8 as BC
 import Data.Conduit
 import Data.Conduit.TMChan
+import qualified Data.Conduit.Binary as CB
 import qualified Data.Conduit.List as CL
 import Network
 import System.IO
@@ -20,18 +26,18 @@ import ChatCore.IRC.Line
 -- A handle referring to an IRC connection. Contains the channels for reading
 -- and writing as well as a reference to the connection's thread.
 data IRCConnection = IRCConnection
-    { ircSendChan   :: TMChan IRCMessage  -- Channel for messages to send to the IRC server.
-    , ircRecvChan   :: TMChan IRCMessage  -- Channel for messages received from the IRC server.
-    , ircSendThread     :: ThreadId       -- The connection thread's ID.
-    , ircRecvThread     :: ThreadId       -- The connection thread's ID.
+    { ircSendChan   :: TMChan IRCLine   -- Channel for messages to send to the IRC server.
+    , ircRecvChan   :: TMChan IRCLine   -- Channel for messages received from the IRC server.
+    , ircSendThread     :: ThreadId     -- The connection thread's ID.
+    , ircRecvThread     :: ThreadId     -- The connection thread's ID.
     }
 
 
 data IRCState = IRCState
     { ircServer     :: (HostName, PortID)   -- The hostname and port of the server.
     , ircHandle     :: Handle               -- The handle for the IRC connection.
-    , stateSendChan :: TMChan IRCMessage
-    , stateRecvChan :: TMChan IRCMessage
+    , stateSendChan :: TMChan IRCLine
+    , stateRecvChan :: TMChan IRCLine
     }
 
 -- Monad for the internal IRC stuff.
@@ -56,7 +62,7 @@ connectIRC host port nick = do
     -- Start the sender thread.
     sendThread <- forkIO $ do
         -- Read from the channel and call sendIRCMessage for each item.
-        sourceTMChan sendChan $$ CL.mapM_ (sendIRCMessage handle)
+        sourceTMChan sendChan $$ sendMessages handle
     recvThread <- forkIO $ do
         -- Read from the handle, parse each message, and write them to the channel.
         receiveMessages handle $$ sinkTMChan recvChan True
@@ -68,27 +74,43 @@ connectIRC host port nick = do
         , ircRecvThread = recvThread
         }
 
+
+removeCr :: B.ByteString -> B.ByteString
+removeCr str =
+    if BC.last str == '\r'
+       then B.init str
+       else str
+
 -- | Provides a Source of received IRC messages on the given handle.
-receiveMessages :: Handle -> Source IO IRCMessage
-receiveMessages _ = yield $ PrivMsg "#test" "Test" "This is a test."
+receiveMessages :: Handle -> Source IO IRCLine
+receiveMessages handle =
+    -- Read lines from the handle and parse them.
+    CB.sourceHandle handle $= CB.lines $= CL.map removeCr $= CL.map parseLine $= CL.mapMaybe hush
 
 -- | Sends the given IRC message on the given handle.
-sendIRCMessage :: Handle -> IRCMessage -> IO ()
-sendIRCMessage _ msg = putStrLn $ show $ msg
+sendMessages :: Handle -> Sink IRCLine IO ()
+sendMessages handle =
+    -- Convert the lines to bytestrings and write them to the handle.
+    CL.map lineToByteString =$ CL.map (B.append "\r\n") =$ CB.sinkHandle handle
+
+
+-- | Gets the next line received from the IRC server.
+-- If no line has been received, blocks until one is received.
+receiveLine :: IRC IRCLine
+receiveLine = do
+    -- FIXME: This crashes when the channel is closed.
+    recvChan <- gets ircRecvChan
+    mLine <- lift $ atomically $ readTMChan recvChan
+    return $ fromJust mLine
 
 
 -- | Send a PRIVMSG to the given destination.
 sendPrivMsg :: ChatDest -> T.Text -> IRC ()
 sendPrivMsg (DestChan chan) msg = lift $ T.putStrLn ("PRIVMSG to channel '" `T.append` chan `T.append` "': " `T.append` msg)
 
--- | IRC message type. These represent messages sent from the IRC server.
-data IRCMessage =
-    -- | Represents a received PRIVMSG.
-    PrivMsg
-        { privmsgSource     :: ChatSource   -- The source this message was received on (channel or user PM).
-        , privmsgSender     :: Nick         -- The nick of the user who sent the privmsg.
-        , privmsgContent    :: T.Text       -- The content of the privmsg.
-        }
-    deriving (Show)
 
+-- | Function used primarily for testing which prints all lines received on the
+-- given connection.
+printReceivedLines :: IRCConnection -> IO ()
+printReceivedLines conn = (sourceTMChan $ ircRecvChan conn) $$ CL.mapM_ print
 
