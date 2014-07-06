@@ -4,6 +4,7 @@
 module ChatCore.NetworkController
     ( NetCtlHandle
     , startNetCtl
+    , sendNetCtl
     ) where
 
 import Control.Concurrent.Actor
@@ -44,6 +45,14 @@ startNetCtl cnId = do
         { netId = cnId
         , netActorAddr = addr
         }
+
+-- | Sends a client event to the given network controller from outside the
+-- context of an actor.
+-- This is done asynchronously.
+sendNetCtl :: NetCtlHandle -> ClientEvent -> IO ()
+sendNetCtl handle evt = do
+    spawn $ send (netActorAddr handle) evt
+    return ()
 
 
 -- | Data structure which stores the state of a chat session on a network.
@@ -102,17 +111,30 @@ netCtlActorCase state handler =
     Case $ ((flip execNetCtlActor $ state) . (>> networkController) . handler)
 
 
+-- | Executes an IRC action from within a NetCtlActor context.
+ncIRC :: IRC a -> NetCtlActor a
+ncIRC action = gets ircConnection >>= (lift2 . evalIRCAction action)
+
+
+-- | Handles a client event for the given network controller.
 netCtlHandleClientEvent :: ClientEvent -> NetCtlActor ()
-netCtlHandleClientEvent evt@(SendMessage _ dest msg) =
-    lift2 $ print evt
+
+netCtlHandleClientEvent (JoinChannel _ chan) = ncIRC $ sendJoinCmd chan
+netCtlHandleClientEvent (PartChannel _ chan msg) = ncIRC $ sendPartCmd chan msg
+
+netCtlHandleClientEvent (SendMessage _ dest msg) = ncIRC $ sendPrivMsgCmd dest msg
+
+netCtlHandleClientEvent evt = lift2 $ print evt
 
 
+
+-- | Handles an IRC line.
 netCtlHandleLine :: IRCLine -> NetCtlActor ()
 -- Handle PING
 netCtlHandleLine line@(IRCLine _ (IRCCommand "PING") _ addr) = do
-    conn <- gets ircConnection
     lift2 $ putStrLn ("PING from " ++ show addr)
-    lift2 $ doIRC conn $ sendPongCmd addr
+    ncIRC $ sendPongCmd addr
+
 netCtlHandleLine line = lift2 $ putStrLn ("Got unknown line: " ++ show line)
 
 

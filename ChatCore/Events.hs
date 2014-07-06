@@ -25,7 +25,10 @@ data ClientEvent =
         { sendMsgNetwork    :: ChatNetworkId    -- ID of the IRC network to send the message on.
         , sendMsgDest       :: ChatDest         -- Destination to send the message to.
         , sendMsgContent    :: T.Text           -- Content of the message.
-        } deriving (Show, Typeable)
+        } |
+    JoinChannel ChatNetworkId ChatChan |
+    PartChannel ChatNetworkId ChatChan T.Text
+    deriving (Show, Typeable)
 
 
 -- | Data structure representing a Chat Core core event.
