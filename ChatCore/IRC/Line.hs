@@ -136,7 +136,7 @@ lineTextBuilder line =
     <> maybe mempty (\t -> TL.fromText " :" <> TL.fromText t) (ilBody line)
   where
     textAndSpace text = TL.fromText text <> TL.singleton ' '
-    spaceAndText text = TL.singleton ' ' <> TL.fromText text 
+    spaceAndText text = TL.singleton ' ' <> TL.fromText text
 
 -- }}}
 
