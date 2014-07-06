@@ -89,6 +89,7 @@ netCtlActor :: NetCtlState -> Actor
 netCtlActor state = do
     me <- self
     recvActor <- lift $ spawn $ receiveActor me $ ircConnection state
+    link recvActor
 
     -- Connect to the network.
     lift $ doIRC (ircConnection state) $ do
@@ -101,7 +102,7 @@ networkController :: NetCtlActor ()
 networkController = do
     me <- lift self
     state <- get
-    lift $ receive $ 
+    lift $ receive $
         [ netCtlActorCase state netCtlHandleClientEvent
         , netCtlActorCase state netCtlHandleLine
         ]
