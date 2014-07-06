@@ -17,7 +17,7 @@ import Control.Monad.STM
 import Control.Concurrent (ThreadId, forkIO)
 import Control.Concurrent.STM.TMChan
 import Control.Monad.Trans
-import Control.Monad.Trans.State
+import Control.Monad.Trans.Reader
 import Control.Error.Util
 import Data.Maybe
 import qualified Data.Text as T
@@ -53,12 +53,12 @@ data IRCState = IRCState
     }
 
 -- Monad for the internal IRC stuff.
-type IRC = StateT IRCConnection IO
+type IRC = ReaderT IRCConnection IO
 
 
 -- Executes an IRC action with the given IRC connection.
 evalIRCAction :: IRC a -> IRCConnection -> IO a
-evalIRCAction = evalStateT
+evalIRCAction = runReaderT
 
 -- A version of evalIRCAction with its arguments flipped.
 doIRC :: IRCConnection -> IRC a -> IO a
@@ -115,14 +115,14 @@ sendMessages handle =
 recvLine :: IRC IRCLine
 recvLine = do
     -- FIXME: This crashes when the channel is closed.
-    recvChan <- gets ircRecvChan
+    recvChan <- asks ircRecvChan
     mLine <- lift $ atomically $ readTMChan recvChan
     return $ fromJust mLine
 
 -- | Sends a line to the IRC server.
 sendLine :: IRCLine -> IRC ()
 sendLine line = do
-    sendChan <- gets ircSendChan
+    sendChan <- asks ircSendChan
     lift $ atomically $ writeTMChan sendChan line
 
 
