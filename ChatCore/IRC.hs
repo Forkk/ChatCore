@@ -1,4 +1,16 @@
-module ChatCore.IRC where
+module ChatCore.IRC
+    ( IRCConnection
+    , connectIRC
+    , evalIRCAction
+    , doIRC
+
+    , IRC
+
+    , sendLine
+    , recvLine
+
+    , module ChatCore.IRC.Line
+    ) where
 
 import Control.Applicative
 import Control.Monad.STM
@@ -48,6 +60,10 @@ type IRC = StateT IRCConnection IO
 evalIRCAction :: IRC a -> IRCConnection -> IO a
 evalIRCAction = evalStateT
 
+-- A version of evalIRCAction with its arguments flipped.
+doIRC :: IRCConnection -> IRC a -> IO a
+doIRC = flip evalIRCAction
+
 
 -- | Connects to an IRC server at the given host and port.
 connectIRC :: HostName -> PortID -> IO IRCConnection
@@ -96,8 +112,8 @@ sendMessages handle =
 
 -- | Gets the next line received from the IRC server.
 -- If no line has been received, blocks until one is received.
-receiveLine :: IRC IRCLine
-receiveLine = do
+recvLine :: IRC IRCLine
+recvLine = do
     -- FIXME: This crashes when the channel is closed.
     recvChan <- gets ircRecvChan
     mLine <- lift $ atomically $ readTMChan recvChan

@@ -18,12 +18,13 @@ module ChatCore.IRC.Line
 import Control.Monad
 import Control.Applicative ((<$>), (<*>))
 import Data.Monoid
+import qualified Data.ByteString as B
+import qualified Data.ByteString.Lazy as BL
 import qualified Data.Text as T
 import qualified Data.Text.Lazy.Builder as TL
 import qualified Data.Text.Encoding as T
 import qualified Data.Text.Lazy.Encoding as TL
-import qualified Data.ByteString as B
-import qualified Data.ByteString.Lazy as BL
+import Data.Typeable
 import Text.Parsec
 import Text.Parsec.ByteString
 import Test.HUnit
@@ -49,7 +50,7 @@ data IRCLine = IRCLine
     , ilCommand     :: IRCCommand
     , ilArgs        :: [IRCArgument]
     , ilBody        :: Maybe IRCBody
-    } deriving (Show, Eq)
+    } deriving (Show, Eq, Typeable)
 
 -- | Parses the given text to an IRC line structure.
 parseLine :: B.ByteString -> Either ParseError IRCLine

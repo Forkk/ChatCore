@@ -9,6 +9,7 @@
 module ChatCore.Events where
 
 import qualified Data.Text as T
+import Data.Typeable
 
 import ChatCore.Types
 
@@ -24,7 +25,7 @@ data ClientEvent =
         { sendMsgNetwork    :: ChatNetworkId    -- ID of the IRC network to send the message on.
         , sendMsgDest       :: ChatDest         -- Destination to send the message to.
         , sendMsgContent    :: T.Text           -- Content of the message.
-        }
+        } deriving (Show, Typeable)
 
 
 -- | Data structure representing a Chat Core core event.
@@ -37,5 +38,5 @@ data CoreEvent =
         , recvMsgSource     :: ChatSource       -- The source this message was received on (channel or user PM).
         , recvMsgSender     :: Nick             -- The nick of the user who sent the message.
         , recvMsgContent    :: T.Text           -- The content of the message.
-        }
+        } deriving (Show, Typeable)
 

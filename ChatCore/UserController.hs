@@ -18,7 +18,7 @@ import ChatCore.Types
 import ChatCore.Events
 
 data UserState = UserState
-    { usNetworks    :: S.Seq NetworkState   -- The networks the user is connected to.
+    { usNetworks    :: S.Seq NetCtlHandle   -- The networks the user is connected to.
     , usClients     :: [ClientConnection]   -- The clients connected as this user.
     }
 
@@ -38,8 +38,9 @@ eventHandler = CL.foldM $ handler
 -- | Handles a client event.
 handleClientEvent :: ClientEvent -> UserHandler ()
 handleClientEvent evt@(SendMessage netId dest msg) =
-    withNetHandler netId $ handleSendMessage dest msg
+    lift $ print evt
 
+{-
 withNetHandler :: ChatNetworkId -> NetworkHandler () -> UserHandler ()
 withNetHandler cnId func = withNetwork cnId $ execNetworkHandler func
 
@@ -56,4 +57,5 @@ withNetwork cnId func = do
          Just idx -> do
              newState <- lift $ func $ (flip S.index) idx networks
              modify (\s -> s { usNetworks = S.update idx newState $ usNetworks s })
+-}
 
