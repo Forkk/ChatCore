@@ -91,14 +91,7 @@ receiveMessages handle =
 sendMessages :: Handle -> Sink IRCLine IO ()
 sendMessages handle =
     -- Convert the lines to bytestrings and write them to the handle.
-    CL.map lineToByteString =$ CL.map (`B.append` "\r\n") =$ handleSink handle
-
-handleSink :: Handle -> Sink B.ByteString IO ()
-handleSink handle = awaitForever (\ bs -> do
-    lift $ print bs
-    lift $ B.hPutStr handle bs
-    lift $ hFlush handle
-    )
+    CL.map lineToByteString =$ CL.map (`B.append` "\r\n") =$ CB.sinkHandle handle
 
 
 -- | Gets the next line received from the IRC server.
