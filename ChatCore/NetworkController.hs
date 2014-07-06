@@ -13,6 +13,7 @@ import Network
 import ChatCore.Protocol
 import ChatCore.Events
 import ChatCore.IRC
+import ChatCore.IRC.Commands
 import ChatCore.Types
 
 -- | Data structure which stores the state of a chat session on a network.
@@ -35,5 +36,5 @@ execNetworkHandler handler state = evalIRCAction (execStateT handler state) $ ir
 
 -- | Sends the given message to the given destination.
 handleSendMessage :: ChatDest -> T.Text -> NetworkHandler ()
-handleSendMessage dest msg = lift $ sendPrivMsg dest msg
+handleSendMessage dest msg = lift $ sendPrivMsgCmd dest msg
 

@@ -50,8 +50,8 @@ evalIRCAction = evalStateT
 
 
 -- | Connects to an IRC server at the given host and port.
-connectIRC :: HostName -> PortID -> Nick -> IO IRCConnection
-connectIRC host port nick = do
+connectIRC :: HostName -> PortID -> IO IRCConnection
+connectIRC host port = do
     -- Create channels.
     sendChan <- atomically $ newTMChan
     recvChan <- atomically $ newTMChan
@@ -91,7 +91,14 @@ receiveMessages handle =
 sendMessages :: Handle -> Sink IRCLine IO ()
 sendMessages handle =
     -- Convert the lines to bytestrings and write them to the handle.
-    CL.map lineToByteString =$ CL.map (B.append "\r\n") =$ CB.sinkHandle handle
+    CL.map lineToByteString =$ CL.map (`B.append` "\r\n") =$ handleSink handle
+
+handleSink :: Handle -> Sink B.ByteString IO ()
+handleSink handle = awaitForever (\ bs -> do
+    lift $ print bs
+    lift $ B.hPutStr handle bs
+    lift $ hFlush handle
+    )
 
 
 -- | Gets the next line received from the IRC server.
@@ -103,10 +110,11 @@ receiveLine = do
     mLine <- lift $ atomically $ readTMChan recvChan
     return $ fromJust mLine
 
-
--- | Send a PRIVMSG to the given destination.
-sendPrivMsg :: ChatDest -> T.Text -> IRC ()
-sendPrivMsg (DestChan chan) msg = lift $ T.putStrLn ("PRIVMSG to channel '" `T.append` chan `T.append` "': " `T.append` msg)
+-- | Sends a line to the IRC server.
+sendLine :: IRCLine -> IRC ()
+sendLine line = do
+    sendChan <- gets ircSendChan
+    lift $ atomically $ writeTMChan sendChan line
 
 
 -- | Function used primarily for testing which prints all lines received on the

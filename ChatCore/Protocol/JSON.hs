@@ -67,6 +67,6 @@ instance CoreProtocol JSONConnection where
 -- JSON Parsing
 instance FromJSON ClientEvent where
     parseJSON _ = do
-        return $ SendMessage "placeholder" (DestChan "#channel") "This is a placeholder."
+        return $ SendMessage "placeholder" "#channel" "This is a placeholder."
 
 

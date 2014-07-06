@@ -55,6 +55,7 @@ executable chatcore
 
     , ChatCore.IRC
     , ChatCore.IRC.Line
+    , ChatCore.IRC.Commands
 
     , ChatCore.Protocol
     , ChatCore.Protocol.JSON
