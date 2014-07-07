@@ -16,6 +16,7 @@ import qualified Data.Text as T
 import Data.Typeable
 import Network
 
+import ChatCore.Util.StateActor
 import ChatCore.Protocol
 import ChatCore.Events
 import ChatCore.IRC
@@ -33,7 +34,7 @@ startNetCtl cnId = do
     let host = "irc.esper.net"
         port = PortNumber 6667
     connection <- connectIRC host port
-    addr <- spawn $ netCtlActor $ NetCtlState
+    addr <- spawn $ initNetCtlActor $ NetCtlState
         { nsId = cnId
         , netNick = "ChatCore"
         , netChannels = []
@@ -66,12 +67,8 @@ data NetCtlState = NetCtlState
     }
 
 -- | State monad for the network controller actor.
-type NetCtlActor = StateT NetCtlState ActorM
-
--- | Executes a NetCtlActor monad with the given state and returns the modified state.
--- Any return value from the NetCtlActor is discarded.
-execNetCtlActor :: NetCtlActor a -> NetCtlState -> ActorM a
-execNetCtlActor = evalStateT
+type NetCtlActor = StateActor NetCtlState
+type NetCtlActorM = StateActorM NetCtlState
 
 
 -- | An actor spawned by the network controller which receives messages from
@@ -84,9 +81,10 @@ receiveActor ncActor conn = do
     receiveActor ncActor conn
 
 
--- | Executes a network controller with the given state.
-netCtlActor :: NetCtlState -> Actor
-netCtlActor state = do
+-- | Initializes a network controller with the given state.
+initNetCtlActor :: NetCtlState -> Actor
+initNetCtlActor state = do
+    -- Spawn the receiver actor.
     me <- self
     recvActor <- lift $ spawn $ receiveActor me $ ircConnection state
     link recvActor
@@ -96,29 +94,28 @@ netCtlActor state = do
         sendNickCmd $ netNick state
         sendUserCmd (netNick state) "Chat Core"
 
-    execNetCtlActor networkController state
+    -- Start the network controller's state actor.
+    runStateActor networkController state
 
-networkController :: NetCtlActor ()
+-- | The actual network controller actor.
+networkController :: NetCtlActor
 networkController = do
-    me <- lift self
     state <- get
+    let handler :: forall m. Typeable m => (m -> NetCtlActor) -> Handler
+        handler = stateActorHandler networkController state
     lift $ receive $
-        [ netCtlActorCase state netCtlHandleClientCommand
-        , netCtlActorCase state netCtlHandleLine
+        [ handler netCtlHandleClientCommand
+        , handler netCtlHandleLine
         ]
-
-netCtlActorCase :: forall m. Typeable m => NetCtlState -> (m -> NetCtlActor ()) -> Handler
-netCtlActorCase state handler =
-    Case $ ((flip execNetCtlActor $ state) . (>> networkController) . handler)
 
 
 -- | Executes an IRC action from within a NetCtlActor context.
-ncIRC :: IRC a -> NetCtlActor a
-ncIRC action = gets ircConnection >>= (lift2 . evalIRCAction action)
+ncIRC :: IRC a -> NetCtlActorM a
+ncIRC action = gets ircConnection >>= (lift . lift . evalIRCAction action)
 
 
 -- | Handles a client event for the given network controller.
-netCtlHandleClientCommand :: ClientCommand -> NetCtlActor ()
+netCtlHandleClientCommand :: ClientCommand -> NetCtlActor
 
 netCtlHandleClientCommand (JoinChannel _ chan) = ncIRC $ sendJoinCmd chan
 netCtlHandleClientCommand (PartChannel _ chan msg) = ncIRC $ sendPartCmd chan msg
@@ -130,14 +127,13 @@ netCtlHandleClientCommand evt = lift2 $ print evt
 
 
 -- | Handles an IRC line.
-netCtlHandleLine :: IRCLine -> NetCtlActor ()
+netCtlHandleLine :: IRCLine -> NetCtlActor
 -- Handle PING
 netCtlHandleLine line@(IRCLine _ (IRCCommand "PING") _ addr) = do
     lift2 $ putStrLn ("PING from " ++ show addr)
     ncIRC $ sendPongCmd addr
 
 netCtlHandleLine line = lift2 $ putStrLn ("Got unknown line: " ++ show line)
-
 
 lift2 = lift . lift
 

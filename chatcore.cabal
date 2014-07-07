@@ -64,6 +64,9 @@ executable chatcore
     , ChatCore.NetworkController
 
     , ChatCore.Events
+    , ChatCore.Types
+
+    , ChatCore.Util.StateActor
 
   default-extensions:
       OverloadedStrings
