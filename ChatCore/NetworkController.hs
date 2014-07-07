@@ -49,7 +49,7 @@ startNetCtl cnId = do
 -- | Sends a client event to the given network controller from outside the
 -- context of an actor.
 -- This is done asynchronously.
-sendNetCtl :: NetCtlHandle -> ClientEvent -> IO ()
+sendNetCtl :: NetCtlHandle -> ClientCommand -> IO ()
 sendNetCtl handle evt = do
     spawn $ send (netActorAddr handle) evt
     return ()
@@ -103,7 +103,7 @@ networkController = do
     me <- lift self
     state <- get
     lift $ receive $
-        [ netCtlActorCase state netCtlHandleClientEvent
+        [ netCtlActorCase state netCtlHandleClientCommand
         , netCtlActorCase state netCtlHandleLine
         ]
 
@@ -118,14 +118,14 @@ ncIRC action = gets ircConnection >>= (lift2 . evalIRCAction action)
 
 
 -- | Handles a client event for the given network controller.
-netCtlHandleClientEvent :: ClientEvent -> NetCtlActor ()
+netCtlHandleClientCommand :: ClientCommand -> NetCtlActor ()
 
-netCtlHandleClientEvent (JoinChannel _ chan) = ncIRC $ sendJoinCmd chan
-netCtlHandleClientEvent (PartChannel _ chan msg) = ncIRC $ sendPartCmd chan msg
+netCtlHandleClientCommand (JoinChannel _ chan) = ncIRC $ sendJoinCmd chan
+netCtlHandleClientCommand (PartChannel _ chan msg) = ncIRC $ sendPartCmd chan msg
 
-netCtlHandleClientEvent (SendMessage _ dest msg) = ncIRC $ sendPrivMsgCmd dest msg
+netCtlHandleClientCommand (SendMessage _ dest msg) = ncIRC $ sendPrivMsgCmd dest msg
 
-netCtlHandleClientEvent evt = lift2 $ print evt
+netCtlHandleClientCommand evt = lift2 $ print evt
 
 
 

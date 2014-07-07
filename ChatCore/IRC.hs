@@ -82,7 +82,7 @@ connectIRC host port = do
     recvThread <- forkIO $ do
         -- Read from the handle, parse each message, and write them to the channel.
         receiveMessages handle $$ sinkTMChan recvChan True
-    
+
     return IRCConnection
         { ircSendChan = sendChan
         , ircRecvChan = recvChan

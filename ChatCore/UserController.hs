@@ -30,14 +30,14 @@ execUserHandler :: UserHandler a -> UserState -> IO UserState
 execUserHandler = execStateT
 
 -- | A consumer which handles a stream of events.
-eventHandler :: UserState -> Consumer ClientEvent IO UserState
+eventHandler :: UserState -> Consumer ClientCommand IO UserState
 eventHandler = CL.foldM $ handler
   where
-    handler state evt = execUserHandler (handleClientEvent $ evt) state
+    handler state evt = execUserHandler (handleClientCommand $ evt) state
 
 -- | Handles a client event.
-handleClientEvent :: ClientEvent -> UserHandler ()
-handleClientEvent evt@(SendMessage netId dest msg) =
+handleClientCommand :: ClientCommand -> UserHandler ()
+handleClientCommand evt@(SendMessage netId dest msg) =
     lift $ print evt
 
 {-

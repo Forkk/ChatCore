@@ -90,7 +90,7 @@ opaque monadic type which handles the dirty business of getting those Chat Core
 events where they need to go to be processed. Internally, it is implemented as
 a conduit `Source`, which provides a source of Chat Core client events.
 
-> type EventSource = Source IO ClientEvent
+> type EventSource = Source IO ClientCommand
 
 
 Sending Messages to the Client
@@ -103,7 +103,7 @@ core events into messages that the client can understand.
 
 
 > class CoreProtocol conn where
->     -- | Reads messages from the client and provides a source of `ClientEvent`s.
+>     -- | Reads messages from the client and provides a source of `ClientCommand`s.
 >     eventListener   :: conn -> EventSource
 >     -- | Takes a `CoreEvent` and sends the appropriate message to the client.
 >     sendEvent       :: conn -> CoreEvent -> IO ()
