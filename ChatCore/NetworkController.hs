@@ -4,7 +4,8 @@
 module ChatCore.NetworkController
     ( NetCtlHandle
     , startNetCtl
-    , sendNetCtl
+
+    , netCtlId
     ) where
 
 import Control.Concurrent.Actor
@@ -16,45 +17,44 @@ import qualified Data.Text as T
 import Data.Typeable
 import Network
 
-import ChatCore.Util.StateActor
-import ChatCore.Protocol
 import ChatCore.Events
 import ChatCore.IRC
 import ChatCore.IRC.Commands
+import ChatCore.Protocol
 import ChatCore.Types
+import ChatCore.Util.ActorUtil
+import ChatCore.Util.StateActor
+
+-- {{{ External Interface
 
 -- | A handle pointing to a running network controller.
 data NetCtlHandle = NetCtlHandle
-    { netId         :: ChatNetworkId    -- The ID of the controller's network.
-    , netActorAddr  :: Address          -- The address of the controller's actor.
+    { netCtlId  :: ChatNetworkId    -- The ID of the controller's network.
+    , netActor  :: Address          -- The address of the controller's actor.
     }
 
-startNetCtl :: ChatNetworkId -> IO NetCtlHandle
-startNetCtl cnId = do
-    let host = "irc.esper.net"
-        port = PortNumber 6667
+instance ActorHandle NetCtlHandle where
+    actorAddr = netActor
+
+startNetCtl :: IRCNetwork -> IO NetCtlHandle
+startNetCtl ircNet = do
+    let host = servAddress $ head $ inServers ircNet
+        port = servPort $ head $ inServers ircNet
     connection <- connectIRC host port
     addr <- spawn $ initNetCtlActor $ NetCtlState
-        { nsId = cnId
-        , netNick = "ChatCore"
-        , netChannels = []
+        { nsId = inName ircNet
+        , netNick = head $ inNicks ircNet
+        , netChannels = inChannels ircNet
+        -- TODO: Server list stuff.
         , netAddress = host
         , netPort = port
         , ircConnection = connection
         }
-    return $ NetCtlHandle
-        { netId = cnId
-        , netActorAddr = addr
-        }
+    return $ NetCtlHandle (inName ircNet) addr
 
--- | Sends a client event to the given network controller from outside the
--- context of an actor.
--- This is done asynchronously.
-sendNetCtl :: NetCtlHandle -> ClientCommand -> IO ()
-sendNetCtl handle evt = do
-    spawn $ send (netActorAddr handle) evt
-    return ()
+-- }}}
 
+-- {{{ State and types
 
 -- | Data structure which stores the state of a chat session on a network.
 data NetCtlState = NetCtlState
@@ -70,6 +70,7 @@ data NetCtlState = NetCtlState
 type NetCtlActor = StateActor NetCtlState
 type NetCtlActorM = StateActorM NetCtlState
 
+-- }}}
 
 -- | An actor spawned by the network controller which receives messages from
 -- the IRC connection and sends them as actor messages to the network

@@ -11,6 +11,10 @@ type StateActorM s = StateT s ActorM
 type StateActor s = StateActorM s ()
 
 
+-- | Spawns an actor for the given state actor monad and returns its address.
+spawnStateActor :: StateActor s -> s -> IO (Address)
+spawnStateActor actor state = spawn $ runStateActor actor state
+
 -- | Runs the given state actor with the given state.
 runStateActor :: StateActor s -> s -> Actor
 runStateActor actor state = runStateT actor state >> return ()

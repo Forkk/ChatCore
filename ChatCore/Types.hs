@@ -1,6 +1,7 @@
 module ChatCore.Types where
 
 import qualified Data.Text as T
+import Network
 
 type ChatNetworkId = T.Text
 
@@ -15,4 +16,20 @@ type Nick = T.Text
 
 -- | Type representing an IRC channel.
 type ChatChan = T.Text
+
+
+-- | Data structure which describes an IRC network entry.
+data IRCNetwork = IRCNetwork
+    { inName        :: ChatNetworkId    -- The IRC network's name.
+    , inNicks       :: [Nick]           -- A list of nicks for the user to try. Must not be empty.
+    , inChannels    :: [ChatChan]       -- A list of the channels to join on this network.
+    , inServers     :: [IRCServer]      -- A list of the network's servers.
+    }
+
+-- | Data structure which describes an IRC server entry.
+data IRCServer = IRCServer
+    { servName      :: T.Text
+    , servAddress   :: HostName
+    , servPort      :: PortID
+    }
 
