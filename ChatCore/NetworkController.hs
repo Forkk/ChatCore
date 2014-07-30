@@ -14,6 +14,7 @@ import Control.Monad.Trans.State
 import Data.Conduit
 import qualified Data.Conduit.List as CL
 import qualified Data.Text as T
+import qualified Data.Text.IO as T
 import Data.Typeable
 import Network
 
@@ -36,8 +37,8 @@ data NetCtlHandle = NetCtlHandle
 instance ActorHandle NetCtlHandle where
     actorAddr = netActor
 
-startNetCtl :: IRCNetwork -> IO NetCtlHandle
-startNetCtl ircNet = do
+startNetCtl :: IRCNetwork -> Address -> IO NetCtlHandle
+startNetCtl ircNet ucAddr = do
     let host = servAddress $ head $ inServers ircNet
         port = servPort $ head $ inServers ircNet
     connection <- connectIRC host port
@@ -49,6 +50,7 @@ startNetCtl ircNet = do
         , netAddress = host
         , netPort = port
         , ircConnection = connection
+        , userCtlAddr = ucAddr
         }
     return $ NetCtlHandle (inName ircNet) addr
 
@@ -64,6 +66,7 @@ data NetCtlState = NetCtlState
     , netAddress    :: HostName
     , netPort       :: PortID
     , ircConnection :: IRCConnection    -- The IRC connection.
+    , userCtlAddr   :: Address          -- Address of the user controller.
     }
 
 -- | State monad for the network controller actor.
@@ -71,6 +74,8 @@ type NetCtlActor = StateActor NetCtlState
 type NetCtlActorM = StateActorM NetCtlState
 
 -- }}}
+
+-- {{{ Main functions
 
 -- | An actor spawned by the network controller which receives messages from
 -- the IRC connection and sends them as actor messages to the network
@@ -105,36 +110,62 @@ networkController = do
     let handler :: forall m. Typeable m => (m -> NetCtlActor) -> Handler
         handler = stateActorHandler networkController state
     lift $ receive $
-        [ handler netCtlHandleClientCommand
-        , handler netCtlHandleLine
+        [ handler handleClientCmd
+        , handler handleLine
         ]
 
+-- }}}
+
+-- {{{ Utility functions
 
 -- | Executes an IRC action from within a NetCtlActor context.
 ncIRC :: IRC a -> NetCtlActorM a
 ncIRC action = gets ircConnection >>= (lift . lift . evalIRCAction action)
 
+-- | Sends the given core event to the user controller.
+sendCoreEvent :: CoreEvent -> NetCtlActor
+sendCoreEvent evt = do
+    gets userCtlAddr >>= lift . (flip send $ evt)
+
+-- }}}
+
+-- {{{ Handler functions
 
 -- | Handles a client event for the given network controller.
-netCtlHandleClientCommand :: ClientCommand -> NetCtlActor
+handleClientCmd :: ClientCommand -> NetCtlActor
 
-netCtlHandleClientCommand (JoinChannel _ chan) = ncIRC $ sendJoinCmd chan
-netCtlHandleClientCommand (PartChannel _ chan msg) = ncIRC $ sendPartCmd chan msg
+handleClientCmd (JoinChannel _ chan) = ncIRC $ sendJoinCmd chan
+handleClientCmd (PartChannel _ chan msg) = ncIRC $ sendPartCmd chan msg
 
-netCtlHandleClientCommand (SendMessage _ dest msg) = ncIRC $ sendPrivMsgCmd dest msg
+handleClientCmd (SendMessage _ dest msg) = ncIRC $ sendPrivMsgCmd dest msg
 
-netCtlHandleClientCommand evt = lift2 $ print evt
+handleClientCmd evt = lift2 $ print evt
 
 
 
 -- | Handles an IRC line.
-netCtlHandleLine :: IRCLine -> NetCtlActor
+handleLine :: IRCLine -> NetCtlActor
 -- Handle PING
-netCtlHandleLine line@(IRCLine _ (IRCCommand "PING") _ addr) = do
+handleLine (IRCLine _ (IRCCommand "PING") _ addr) = do
     lift2 $ putStrLn ("PING from " ++ show addr)
     ncIRC $ sendPongCmd addr
 
-netCtlHandleLine line = lift2 $ putStrLn ("Got unknown line: " ++ show line)
+-- PRIVMSG and NOTICE
+handleLine (IRCLine (Just sender) (IRCCommand "PRIVMSG") [source] (Just msg)) = do
+    lift2 $ T.putStrLn ("PRIVMSG from " `T.append` (T.pack $ show sender)
+                        `T.append` " on " `T.append` source `T.append`
+                        ": " `T.append` msg)
+    netid <- gets nsId
+    sendCoreEvent $ ReceivedMessage
+        { recvMsgNetwork = netid
+        , recvMsgSource = source
+        , recvMsgSender = sender
+        , recvMsgContent = msg
+        }
+
+handleLine line = lift2 $ putStrLn ("Got unknown line: " ++ show line)
+
+-- }}}
 
 lift2 = lift . lift
 

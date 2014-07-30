@@ -53,14 +53,14 @@ startUserCtl usrId = do
 
 data UserCtlState = UserCtlState
     { usNetCtls :: M.Map ChatNetworkId NetCtlHandle -- Network controller handles for the user's networks.
-    , usClients :: S.Seq ClientConnection -- The clients connected as this user.
+    , usClients :: [ClientConnection] -- The clients connected as this user.
     , usUserId  :: UserId
     }
 
 instance Default UserCtlState where
     def = UserCtlState
         { usNetCtls = M.empty
-        , usClients = S.empty
+        , usClients = []
         -- The undefined should be OK in this case. If the user ID is somehow
         -- not set, the actor should crash anyway.
         , usUserId = undefined
@@ -89,8 +89,9 @@ getNetworkList = return
 -- | Starts a network controller for the given IRCNetwork.
 addNetController :: IRCNetwork -> UserCtlActor
 addNetController net = do
+    me <- lift self
     -- Spawn the network controller and link to it.
-    hand <- lift2 $ startNetCtl net
+    hand <- lift2 $ startNetCtl net me
     lift $ linkActorHandle hand
     modify $ \s -> do
         s { usNetCtls = M.insert (netCtlId hand) hand $ usNetCtls s }
@@ -107,7 +108,7 @@ msgToNetwork cnId msg = do
 
 -- }}}
 
--- {{{ Initializing
+-- {{{ Main functions
 
 -- | Entry point for the user control actor.
 -- Initializes the actor, loads the network list, and starts the network
@@ -131,6 +132,7 @@ userController = do
         handler = stateActorHandler userController state
     lift $ receive $
         [ handler handleClientCommand
+        , handler handleCoreEvent
         ]
 
 -- }}}
@@ -145,6 +147,13 @@ handleClientCommand msg@(SendMessage netId _ _) = msgToNetwork netId msg
 handleClientCommand msg@(JoinChannel netId _)   = msgToNetwork netId msg
 handleClientCommand msg@(PartChannel netId _ _) = msgToNetwork netId msg
 
+
+-- | Handles core events from the network controller.
+handleCoreEvent :: CoreEvent -> UserCtlActor
+handleCoreEvent msg = do
+    lift2 $ print msg
+    gets usClients >>= (mapM_ $ \(ClientConnection conn) -> lift2 $ sendEvent conn msg)
+
 -- }}}
 
 -- {{{ Utility functions
@@ -152,36 +161,4 @@ handleClientCommand msg@(PartChannel netId _ _) = msgToNetwork netId msg
 lift2 = lift . lift
 
 -- }}}
-
-{-
--- | A consumer which handles a stream of events.
-eventHandler :: UserCtlState -> Consumer ClientCommand IO UserCtlState
-eventHandler = CL.foldM $ handler
-  where
-    handler state evt = execUserHandler (handleClientCommand $ evt) state
-
--- | Handles a client event.
-handleClientCommand :: ClientCommand -> UserHandler ()
-handleClientCommand evt@(SendMessage netId dest msg) =
-    lift $ print evt
--}
-
-{-
-withNetHandler :: ChatNetworkId -> NetworkHandler () -> UserHandler ()
-withNetHandler cnId func = withNetwork cnId $ execNetworkHandler func
-
--- | A user state action which takes a network ID and a function which
--- transforms a network state and uses that function to change the state of the
--- network with the given ID.
--- If no network with the given ID exists, this function will do nothing.
-withNetwork :: ChatNetworkId -> (NetworkState -> IO NetworkState) -> UserHandler ()
-withNetwork cnId func = do
-    networks <- gets usNetworks
-    let mIdx = S.findIndexL ((== cnId) . netId) networks
-    case mIdx of
-         Nothing -> return ()
-         Just idx -> do
-             newState <- lift $ func $ (flip S.index) idx networks
-             modify (\s -> s { usNetworks = S.update idx newState $ usNetworks s })
--}
 
