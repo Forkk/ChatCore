@@ -1,7 +1,10 @@
 module ChatCore.Types where
 
+import Control.Concurrent.Actor
 import qualified Data.Text as T
 import Network
+
+import ChatCore.Util.ActorUtil
 
 type ChatNetworkId = T.Text
 
@@ -18,6 +21,10 @@ type Nick = T.Text
 type ChatChan = T.Text
 
 
+-- | A string identifying a user.
+type UserId = T.Text
+
+
 -- | Data structure which describes an IRC network entry.
 data IRCNetwork = IRCNetwork
     { inName        :: ChatNetworkId    -- The IRC network's name.
@@ -32,4 +39,11 @@ data IRCServer = IRCServer
     , servAddress   :: HostName
     , servPort      :: PortID
     }
+
+-- Core controller data types declared here to prevent cyclical imports.
+
+data CoreCtlHandle = CoreCtlHandle Address
+
+instance ActorHandle CoreCtlHandle where
+    actorAddr (CoreCtlHandle addr) = addr
 

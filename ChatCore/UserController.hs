@@ -4,6 +4,7 @@
 module ChatCore.UserController
     ( UserCtlHandle
     , startUserCtl
+    , userCtlId
     ) where
 
 import Control.Applicative
@@ -29,20 +30,19 @@ import ChatCore.Util.StateActor
 
 -- {{{ External Interface
 
--- | A string identifying a user.
-type UserId = T.Text
-
 data UserCtlHandle = UserCtlHandle
     { ucId      :: UserId
     , ucActor   :: Address
     }
 
+userCtlId = ucId
+
 instance ActorHandle UserCtlHandle where
     actorAddr = ucActor
 
 -- | Starts a user controller for the given user ID.
-startUserCtl :: UserId -> IO UserCtlHandle
-startUserCtl usrId = do
+startUserCtl :: UserId -> CoreCtlHandle -> IO UserCtlHandle
+startUserCtl usrId coreHandle = do
     -- TODO: Look up the user in the database and load their information.
     addr <- spawnStateActor initUserCtlActor $ def { usUserId = usrId }
     return $ UserCtlHandle usrId addr
@@ -115,8 +115,6 @@ msgToNetwork cnId msg = do
 -- controllers.
 initUserCtlActor :: UserCtlActor
 initUserCtlActor = do
-    -- Load networks from the database.
-    netList <- getNetworkList
     -- Start network actors.
     getNetworkList >>= mapM_ addNetController
     -- Proceed on to the main loop.

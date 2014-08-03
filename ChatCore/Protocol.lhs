@@ -103,7 +103,8 @@ core events into messages that the client can understand.
 
 
 > class CoreProtocol conn where
->     -- | Reads messages from the client and provides a source of `ClientCommand`s.
+>     -- | Reads messages from the client and provides a source of
+>     -- `ClientCommand`s.
 >     eventListener   :: conn -> EventSource
 >     -- | Takes a `CoreEvent` and sends the appropriate message to the client.
 >     sendEvent       :: conn -> CoreEvent -> IO ()

@@ -139,8 +139,6 @@ handleClientCmd (PartChannel _ chan msg) = ncIRC $ sendPartCmd chan msg
 
 handleClientCmd (SendMessage _ dest msg) = ncIRC $ sendPrivMsgCmd dest msg
 
-handleClientCmd evt = lift2 $ print evt
-
 
 
 -- | Handles an IRC line.
