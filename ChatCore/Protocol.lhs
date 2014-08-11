@@ -9,8 +9,12 @@ First, the module definition and imports.
 > {-# LANGUAGE RankNTypes, MultiParamTypeClasses, FunctionalDependencies #-}
 > module ChatCore.Protocol where
 > 
+> import Control.Concurrent.Actor
+> import Control.Monad.Trans
+> import Control.Monad.Trans.Reader
 > import Data.Conduit
 > import qualified Data.Text as T
+> import Data.Typeable
 > 
 > import ChatCore.Events
 
@@ -49,17 +53,36 @@ passing in a function to initialize the connection. Initialization should not
 be done in the listener function's thread, as initialization may require doing
 things that aren't thread-safe.
 
-> type ConnectionSource conn = (CoreProtocol conn) => Source IO (IO conn)
+The connection source is secretly an actor with access to the core controller.
+Calling `newConnection` sends a `NewConnection` event to the core controller
+actor.
+
+> type ConnectionSource = ReaderT Address ActorM ()
 > 
-> class CoreProtocol conn => CoreType ctype conn where
+> class (Typeable ctype, CoreProtocol conn) => CoreType ctype conn |
+>       ctype -> conn, conn -> ctype where
 >     coreTypeName :: ctype -> T.Text
 >     coreTypeDesc :: ctype -> T.Text
->     connectionListener :: ctype -> ConnectionSource conn
+>     connectionListener :: ctype -> ConnectionSource
 
-This function hides the fact that the connection listener is a conduit source.
+This function hides the fact that the connection listener is an actor.
 
-> newConnection :: (CoreProtocol conn) => IO conn -> ConnectionSource conn
-> newConnection connAction = yield connAction
+> newConnection :: (CoreProtocol conn) => IO conn -> ConnectionSource
+> newConnection connAction = do
+>     addr <- ask
+>     lift $ send addr $ NewConnection connAction
+
+This event data type is used by the core controller to receive new connections.
+
+> data NewConnEvent where
+>     NewConnection :: CoreProtocol conn => IO conn -> NewConnEvent
+>     deriving (Typeable)
+
+This function is used to start a connection listener.
+
+> runConnListener :: CoreType ct conn => Address -> ct -> Actor
+> runConnListener coreCtl ct =
+>     runReaderT (connectionListener ct) coreCtl
 
 
 The `CoreProtocol` Class
@@ -102,7 +125,7 @@ simple, the typeclass must implement a function which translates Chat Core's
 core events into messages that the client can understand.
 
 
-> class CoreProtocol conn where
+> class Typeable conn => CoreProtocol conn where
 >     -- | Reads messages from the client and provides a source of
 >     -- `ClientCommand`s.
 >     eventListener   :: conn -> EventSource

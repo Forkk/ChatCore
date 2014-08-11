@@ -11,6 +11,10 @@ class ActorHandle hand where
     -- | Gets the actor address for the given handle.
     actorAddr :: hand -> Address
 
+-- An address is also a handle.
+instance ActorHandle Address where
+    actorAddr = id
+
 
 linkActorHandle :: ActorHandle hand => hand -> Actor
 linkActorHandle = link . actorAddr

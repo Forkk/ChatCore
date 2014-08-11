@@ -11,9 +11,13 @@ import Control.Monad.Trans
 import Control.Monad.Trans.State
 import Data.Default
 import qualified Data.Map as M
+import qualified Data.Set as S
 import qualified Data.Text as T
 import Data.Typeable
+import Network
 
+import ChatCore.Protocol
+import ChatCore.Protocol.JSON
 import ChatCore.Types
 import ChatCore.UserController
 import ChatCore.Util.ActorUtil
@@ -33,13 +37,26 @@ runCoreCtl = runActor $ runStateActor initCoreCtlActor $ def
 
 -- {{{ State and types
 
+-- Handle for connection listener actors.
+data ConnListenerHandle = forall ctype conn. CoreType ctype conn =>
+    ConnListenerHandle
+    { clhAddr :: Address
+    , clhType :: ctype
+    } deriving (Typeable)
+
+instance ActorHandle ConnListenerHandle where
+    actorAddr = clhAddr
+
+
 data CoreCtlState = CoreCtlState
     { ccUserCtls :: M.Map UserId UserCtlHandle -- User controller handles.
+    , ccConnListeners :: [ConnListenerHandle]
     }
 
 instance Default CoreCtlState where
     def = CoreCtlState
         { ccUserCtls = M.empty
+        , ccConnListeners = []
         }
 
 -- | State monad for the core controller actor.
@@ -56,6 +73,16 @@ type CoreCtlActorM = StateActorM CoreCtlState
 getUserList :: CoreCtlActorM [UserId]
 getUserList = return [ "Forkk" ]
 
+
+-- Wrapper type so we can store a list of CoreType objects.
+data CoreTypeDef = forall ct conn. CoreType ct conn => CoreTypeDef ct
+
+getCoreTypeList :: CoreCtlActorM [CoreTypeDef]
+getCoreTypeList = return
+    [ CoreTypeDef $ JSONCoreType $ PortNumber 1337
+    ]
+
+
 -- | Starts a user controller for the given IRCUser.
 addUserController :: UserId -> CoreCtlActor
 addUserController user = do
@@ -66,6 +93,23 @@ addUserController user = do
     modify $ \s -> do
         s { ccUserCtls = M.insert (userCtlId hand) hand $ ccUserCtls s }
 
+
+-- | Starts a connection listener for the given core type.
+addConnListener :: CoreType ct conn => ct -> CoreCtlActor
+addConnListener ct = do
+    me <- lift self
+    hand <- liftIO $ spawnConnListener me ct
+    lift $ linkActorHandle hand
+    modify $ \s -> do
+        s { ccConnListeners = hand : ccConnListeners s }
+
+
+-- | Starts a connection listener for the given core type and returns a handle.
+spawnConnListener :: CoreType ct conn => Address ->ct -> IO (ConnListenerHandle)
+spawnConnListener coreCtl ct = do
+    addr <- spawn $ runConnListener coreCtl ct
+    return $ ConnListenerHandle addr ct
+
 -- }}}
 
 -- {{{ Main functions
@@ -74,8 +118,10 @@ addUserController user = do
 -- Initializes the actor, loads the user list, and starts the user controllers.
 initCoreCtlActor :: CoreCtlActor
 initCoreCtlActor = do
-    -- Start network actors.
+    -- Start user controllers.
     getUserList >>= mapM_ addUserController
+    -- Start connection listeners.
+    getCoreTypeList >>= mapM_ (\(CoreTypeDef ct) -> addConnListener ct)
     -- Proceed on to the main loop.
     coreController
 
@@ -89,6 +135,7 @@ coreController = do
         handler = stateActorHandler coreController state
     lift $ receive $
         [ handler handleCoreCommand
+        , handler handleNewConnEvent
         ]
 
 -- }}}
@@ -102,6 +149,14 @@ data CoreCtlCommand = CCmdPlaceholder
 handleCoreCommand :: CoreCtlCommand -> CoreCtlActor
 
 handleCoreCommand CCmdPlaceholder = lift2 $ putStrLn "Boop"
+
+
+-- | Handles connection listener events.
+handleNewConnEvent :: NewConnEvent -> CoreCtlActor
+
+handleNewConnEvent (NewConnection conn) = do
+    liftIO $ putStrLn "New connection."
+
 
 -- }}}
 

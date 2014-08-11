@@ -12,6 +12,7 @@ import qualified Data.Conduit.List as CL
 import Data.Aeson
 import qualified Data.ByteString as B
 import qualified Data.Text as T
+import Data.Typeable
 import Network
 import System.IO
 
@@ -25,16 +26,17 @@ jsonCoreType = JSONCoreType { jsonCorePort = PortNumber 1337 }
 -- | Data structure for the JSON core type.
 data JSONCoreType = JSONCoreType
     { jsonCorePort :: PortID -- The port to listen on.
-    }
+    } deriving (Typeable)
 
 instance CoreType JSONCoreType JSONConnection where
     coreTypeName _ = "JSON Serialization"
     coreTypeDesc _ = "A protocol that simply exposes Chat Core's internal event system via JSON serialization."
     connectionListener coreType = do
+        liftIO $ putStrLn "JSON core type is listening."
         -- Wait for a connection.
-        sock <- lift $ listenOn (jsonCorePort coreType)
+        sock <- liftIO $ listenOn (jsonCorePort coreType)
         -- Accept the sock.
-        (handle, host, port) <- lift $ accept sock
+        (handle, host, port) <- liftIO $ accept sock
         -- Create the connection object.
         let conn = JSONConnection { jcHandle = handle
                                   , jcRemoteHost = host
@@ -53,7 +55,7 @@ data JSONConnection = JSONConnection
     , jcRemoteHost :: HostName     -- | The client's hostname.
     , jcPortNumber :: PortNumber   -- | The port number.
     , jcSocket     :: Socket       -- | The socket to receive data from.
-    }
+    } deriving (Typeable)
 
 instance CoreProtocol JSONConnection where
     eventListener conn =

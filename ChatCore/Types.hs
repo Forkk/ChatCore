@@ -40,7 +40,6 @@ data IRCServer = IRCServer
     , servPort      :: PortID
     }
 
--- Core controller data types declared here to prevent cyclical imports.
 
 data CoreCtlHandle = CoreCtlHandle Address
 

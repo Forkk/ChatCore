@@ -60,6 +60,7 @@ executable chatcore
     , ChatCore.Protocol
     , ChatCore.Protocol.JSON
 
+    , ChatCore.CoreController
     , ChatCore.UserController
     , ChatCore.NetworkController
 
