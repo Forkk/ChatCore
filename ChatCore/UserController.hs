@@ -5,6 +5,8 @@ module ChatCore.UserController
     ( UserCtlHandle
     , startUserCtl
     , userCtlId
+
+    , AddConnEvent (AddConn)
     ) where
 
 import Control.Applicative
@@ -50,6 +52,10 @@ startUserCtl usrId coreHandle = do
 -- }}}
 
 -- {{{ State and types
+
+-- Event for adding a new connection.
+data AddConnEvent = AddConn ClientConnection deriving (Typeable)
+
 
 data UserCtlState = UserCtlState
     { usNetCtls :: M.Map ChatNetworkId NetCtlHandle -- Network controller handles for the user's networks.
@@ -131,6 +137,7 @@ userController = do
     lift $ receive $
         [ handler handleClientCommand
         , handler handleCoreEvent
+        , handler handleNewConnEvent
         ]
 
 -- }}}
@@ -151,6 +158,14 @@ handleCoreEvent :: CoreEvent -> UserCtlActor
 handleCoreEvent msg = do
     lift2 $ print msg
     gets usClients >>= (mapM_ $ \(ClientConnection conn) -> lift2 $ sendEvent conn msg)
+
+
+-- | Handles connection listener events.
+handleNewConnEvent :: AddConnEvent -> UserCtlActor
+handleNewConnEvent (AddConn conn) = do
+    liftIO $ putStrLn "New connection."
+    modify $ \s -> do
+        s { usClients = conn : usClients s }
 
 -- }}}
 

@@ -153,9 +153,12 @@ handleCoreCommand CCmdPlaceholder = lift2 $ putStrLn "Boop"
 
 -- | Handles connection listener events.
 handleNewConnEvent :: NewConnEvent -> CoreCtlActor
-
-handleNewConnEvent (NewConnection conn) = do
-    liftIO $ putStrLn "New connection."
+handleNewConnEvent (NewConnection connAction) = do
+    -- Run the connection action.
+    conn <- ClientConnection <$> liftIO connAction
+    -- TODO: Find the correct user controller to send this to.
+    -- For now, we'll just attach it to all of them.
+    mapM_ (lift . msgActorSend (AddConn conn)) =<< M.elems <$> gets ccUserCtls
 
 
 -- }}}

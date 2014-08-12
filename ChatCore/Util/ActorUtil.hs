@@ -23,6 +23,10 @@ linkActorHandle = link . actorAddr
 sendActorMsg :: (ActorHandle hand, Typeable msg) => hand -> msg -> Actor
 sendActorMsg hand msg = send (actorAddr hand) msg
 
+-- Flipped version of `sendActorMsg`
+msgActorSend :: (ActorHandle hand, Typeable msg) => msg -> hand -> Actor
+msgActorSend = flip sendActorMsg
+
 -- | Sends the given message from within the IO monad.
 -- This is done asynchronously.
 -- This is a hack and should really only be used for testing.

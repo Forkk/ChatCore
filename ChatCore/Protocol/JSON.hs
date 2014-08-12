@@ -11,6 +11,7 @@ import Data.Maybe
 import qualified Data.Conduit.List as CL
 import Data.Aeson
 import qualified Data.ByteString as B
+import qualified Data.ByteString.Lazy as BL
 import qualified Data.Text as T
 import Data.Typeable
 import Network
@@ -59,11 +60,12 @@ data JSONConnection = JSONConnection
 
 instance CoreProtocol JSONConnection where
     eventListener conn =
-        src $= (CL.map $ decodeStrict) $= (CL.filter $ isJust) $= (CL.map $ fromJust)
+        src $= (CL.mapM_ $ B.putStrLn) --(CL.map $ decodeStrict) $= (CL.filter $ isJust) $= (CL.map $ fromJust)
       where
         src = (yield =<< (lift $ B.hGetLine $ jcHandle conn)) >> src
 
-    sendEvent _ _ = return ()
+    sendEvent conn msg = do
+        BL.hPutStr (jcHandle conn) $ encode msg
 
 
 -- JSON Parsing
@@ -71,4 +73,9 @@ instance FromJSON ClientCommand where
     parseJSON _ = do
         return $ SendMessage "placeholder" "#channel" "This is a placeholder."
 
+instance ToJSON CoreEvent where
+    toJSON _ = object
+        [ "event"       .= ("test" :: T.Text)
+        , "message"     .= ("Hello world!" :: T.Text)
+        ]
 
