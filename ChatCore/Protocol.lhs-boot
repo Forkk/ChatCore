@@ -1,0 +1,21 @@
+// ex: set ft=lhaskell:
+
+> module ChatCore.Protocol where
+>
+> import Data.Conduit
+> import Data.Typeable
+> import {-# SOURCE #-} ChatCore.Events
+
+This is an `hs-boot` file for the `Protocol` module. Unfortunately, this is
+necessary due to some stupid cyclical imports between the protocol module and
+the `Protocol` module.
+
+> type EventSource = Source IO ClientCommand
+
+> class Typeable conn => CoreProtocol conn where
+>     -- | Reads messages from the client and provides a source of
+>     -- `ClientCommand`s.
+>     eventListener   :: conn -> EventSource
+>     -- | Takes a `CoreEvent` and sends the appropriate message to the client.
+>     sendEvent       :: conn -> CoreEvent -> IO ()
+

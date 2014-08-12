@@ -3,10 +3,8 @@
 -- between these objects.
 module ChatCore.UserController
     ( UserCtlHandle
+    , UserCtlActorMsg (..)
     , startUserCtl
-    , userCtlId
-
-    , AddConnEvent (AddConn)
     ) where
 
 import Control.Applicative
@@ -24,30 +22,40 @@ import Data.Typeable
 import Network
 
 import ChatCore.Events
-import ChatCore.NetworkController
 import ChatCore.Protocol
 import ChatCore.Types
 import ChatCore.Util.ActorUtil
 import ChatCore.Util.StateActor
 
+import {-# SOURCE #-} ChatCore.CoreController
+import ChatCore.NetworkController
+
 -- {{{ External Interface
 
-data UserCtlHandle = UserCtlHandle
-    { ucId      :: UserId
-    , ucActor   :: Address
-    }
+-- data UserCtlHandle = UserCtlHandle
+--     { ucId      :: UserId
+--     , ucActor   :: Address
+--     }
 
-userCtlId = ucId
+-- userCtlId = ucId
 
-instance ActorHandle UserCtlHandle where
-    actorAddr = ucActor
+-- NOTE: If you change this, be sure to update the hs-boot file too.
+data UserCtlActorMsg
+    = UserCtlCoreEvent CoreEvent
+    | UserCtlClientCommand ClientCommand
+    | UserCtlNewConnection ClientConnection
+
+instance ActorMessage UserCtlActorMsg
+
+type UserCtlHandle = ActorHandle UserCtlActorMsg
+
 
 -- | Starts a user controller for the given user ID.
 startUserCtl :: UserId -> CoreCtlHandle -> IO UserCtlHandle
 startUserCtl usrId coreHandle = do
     -- TODO: Look up the user in the database and load their information.
-    addr <- spawnStateActor initUserCtlActor $ def { usUserId = usrId }
-    return $ UserCtlHandle usrId addr
+    hand <- spawnStateActor initUserCtlActor $ def { usUserId = usrId }
+    return hand -- UserCtlHandle usrId addr
 
 -- }}}
 
@@ -73,8 +81,7 @@ instance Default UserCtlState where
         }
 
 -- | State monad for the user controller actor.
-type UserCtlActor = StateActor UserCtlState
-type UserCtlActorM = StateActorM UserCtlState
+type UserCtlActor = StateActorM UserCtlActorMsg UserCtlState
 
 -- }}}
 
@@ -83,7 +90,7 @@ type UserCtlActorM = StateActorM UserCtlState
 -- | Gets the user's network list from the database.
 -- TODO: Implement database stuff. For now this just returns a hard coded list
 -- for testing.
-getNetworkList :: UserCtlActorM [IRCNetwork]
+getNetworkList :: UserCtlActor [IRCNetwork]
 getNetworkList = return
     [ IRCNetwork { inName = "EsperNet"
                  , inServers = [ IRCServer "auto" "irc.esper.net" $ PortNumber 6667 ]
@@ -93,24 +100,26 @@ getNetworkList = return
     ]
 
 -- | Starts a network controller for the given IRCNetwork.
-addNetController :: IRCNetwork -> UserCtlActor
+addNetController :: IRCNetwork -> UserCtlActor ()
 addNetController net = do
     me <- lift self
     -- Spawn the network controller and link to it.
-    hand <- lift2 $ startNetCtl net me
-    lift $ linkActorHandle hand
+    hand <- liftIO $ startNetCtl net me
+    --lift $ linkActorHandle hand -- TODO: Implement linking in hactor
     modify $ \s -> do
-        s { usNetCtls = M.insert (netCtlId hand) hand $ usNetCtls s }
+        s { usNetCtls = M.insert (inName net) hand $ usNetCtls s }
 
 -- | Forwards the given message to the network controller with the given ID.
 -- If there is no such network, this function does nothing.
-msgToNetwork :: (Typeable msg, Show msg) => ChatNetworkId -> msg -> UserCtlActor
+msgToNetwork :: ChatNetworkId -> NetCtlActorMsg -> UserCtlActor ()
 msgToNetwork cnId msg = do
-    -- TODO: The network handle list should probably be a dictionary.
-    -- It shouldn't matter too much though, since it shouldn't ever be a very large list.
-    lift2 $ putStrLn ("Sending message to network controller: " ++ show msg)
     (gets $ M.lookup cnId . usNetCtls) >>=
-        (maybe (return ()) $ lift . (flip sendActorMsg $ msg))
+        (maybe (return ()) $ lift . (flip send $ msg))
+
+-- | Forwards the client command to the network controller with the given ID.
+-- If there is no such network, this function does nothing.
+forwardClientCmd :: ChatNetworkId -> ClientCommand -> UserCtlActor ()
+forwardClientCmd cnId ccmd = msgToNetwork cnId $ NetCtlClientCmd ccmd
 
 -- }}}
 
@@ -119,7 +128,7 @@ msgToNetwork cnId msg = do
 -- | Entry point for the user control actor.
 -- Initializes the actor, loads the network list, and starts the network
 -- controllers.
-initUserCtlActor :: UserCtlActor
+initUserCtlActor :: UserCtlActor ()
 initUserCtlActor = do
     -- Start network actors.
     getNetworkList >>= mapM_ addNetController
@@ -127,51 +136,42 @@ initUserCtlActor = do
     userController
 
 -- | The user controller actor's main function.
-userController :: UserCtlActor
+userController :: UserCtlActor ()
 userController = do
-    -- Get the state.
-    state <- get
-    -- Make a function to wrap handlers.
-    let handler :: forall m. Typeable m => (m -> UserCtlActor) -> Handler
-        handler = stateActorHandler userController state
-    lift $ receive $
-        [ handler handleClientCommand
-        , handler handleCoreEvent
-        , handler handleNewConnEvent
-        ]
+    -- Receive the next message.
+    msg <- lift receive
+    case msg of
+         UserCtlClientCommand ccmd -> handleClientCommand ccmd
+         UserCtlCoreEvent evt -> handleCoreEvent evt
+         UserCtlNewConnection conn -> handleNewConnection conn
+    userController
 
 -- }}}
 
 -- {{{ Event handlers
 
 -- | Handles client commands.
-handleClientCommand :: ClientCommand -> UserCtlActor
+handleClientCommand :: ClientCommand -> UserCtlActor ()
 
 -- Network controller commands.
-handleClientCommand msg@(SendMessage netId _ _) = msgToNetwork netId msg
-handleClientCommand msg@(JoinChannel netId _)   = msgToNetwork netId msg
-handleClientCommand msg@(PartChannel netId _ _) = msgToNetwork netId msg
+handleClientCommand msg@(SendMessage netId _ _) = forwardClientCmd netId msg
+handleClientCommand msg@(JoinChannel netId _)   = forwardClientCmd netId msg
+handleClientCommand msg@(PartChannel netId _ _) = forwardClientCmd netId msg
 
 
 -- | Handles core events from the network controller.
-handleCoreEvent :: CoreEvent -> UserCtlActor
+handleCoreEvent :: CoreEvent -> UserCtlActor ()
 handleCoreEvent msg = do
-    lift2 $ print msg
-    gets usClients >>= (mapM_ $ \(ClientConnection conn) -> lift2 $ sendEvent conn msg)
+    liftIO $ print msg
+    gets usClients >>= (mapM_ $ \(ClientConnection conn) -> liftIO $ sendEvent conn msg)
 
 
 -- | Handles connection listener events.
-handleNewConnEvent :: AddConnEvent -> UserCtlActor
-handleNewConnEvent (AddConn conn) = do
+handleNewConnection :: ClientConnection -> UserCtlActor ()
+handleNewConnection conn = do
     liftIO $ putStrLn "New connection."
     modify $ \s -> do
         s { usClients = conn : usClients s }
-
--- }}}
-
--- {{{ Utility functions
-
-lift2 = lift . lift
 
 -- }}}
 

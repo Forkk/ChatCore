@@ -4,7 +4,8 @@ import Control.Concurrent.Actor
 import qualified Data.Text as T
 import Network
 
-import ChatCore.Util.ActorUtil
+import {-# SOURCE #-} ChatCore.Protocol 
+
 
 type ChatNetworkId = T.Text
 
@@ -39,10 +40,4 @@ data IRCServer = IRCServer
     , servAddress   :: HostName
     , servPort      :: PortID
     }
-
-
-data CoreCtlHandle = CoreCtlHandle Address
-
-instance ActorHandle CoreCtlHandle where
-    actorAddr (CoreCtlHandle addr) = addr
 

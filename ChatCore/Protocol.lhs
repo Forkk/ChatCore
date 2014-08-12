@@ -17,6 +17,8 @@ First, the module definition and imports.
 > import Data.Typeable
 > 
 > import ChatCore.Events
+> import ChatCore.Types
+> import {-# SOURCE #-} ChatCore.CoreController
 
 
 The Typeclasses
@@ -57,8 +59,6 @@ The connection source is secretly an actor with access to the core controller.
 Calling `newConnection` sends a `NewConnection` event to the core controller
 actor.
 
-> type ConnectionSource = ReaderT Address ActorM ()
-> 
 > class (Typeable ctype, CoreProtocol conn) => CoreType ctype conn |
 >       ctype -> conn, conn -> ctype where
 >     coreTypeName :: ctype -> T.Text
@@ -70,7 +70,7 @@ This function hides the fact that the connection listener is an actor.
 > newConnection :: (CoreProtocol conn) => IO conn -> ConnectionSource
 > newConnection connAction = do
 >     addr <- ask
->     lift $ send addr $ NewConnection connAction
+>     lift $ send addr $ CoreNewConnection connAction
 
 This event data type is used by the core controller to receive new connections.
 
@@ -80,7 +80,15 @@ This event data type is used by the core controller to receive new connections.
 
 This function is used to start a connection listener.
 
-> runConnListener :: CoreType ct conn => Address -> ct -> Actor
+> -- The connection listener does not accept any messages.
+> data ConnListenerMsg = ClMsg
+> instance ActorMessage ConnListenerMsg
+> type ConnListenerHandle = ActorHandle ConnListenerMsg
+>
+> type ConnectionSource = ReaderT CoreCtlHandle (ActorM ConnListenerMsg) ()
+> 
+> runConnListener :: CoreType ct conn =>
+>                    CoreCtlHandle -> ct -> ActorM ConnListenerMsg ()
 > runConnListener coreCtl ct =
 >     runReaderT (connectionListener ct) coreCtl
 
