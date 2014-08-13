@@ -12,6 +12,7 @@ import Control.Monad.Trans
 import Control.Monad.Trans.State
 import Data.Conduit
 import qualified Data.Conduit.List as CL
+import Data.Maybe
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
 import Data.Typeable
@@ -139,7 +140,8 @@ sendCoreEvent evt = do
 handleClientCmd :: ClientCommand -> NetCtlActor ()
 
 handleClientCmd (JoinChannel _ chan) = ncIRC $ sendJoinCmd chan
-handleClientCmd (PartChannel _ chan msg) = ncIRC $ sendPartCmd chan msg
+handleClientCmd (PartChannel _ chan msg) =
+    ncIRC $ sendPartCmd chan $ fromMaybe "Leaving" msg
 
 handleClientCmd (SendMessage _ dest msg) = ncIRC $ sendPrivMsgCmd dest msg
 

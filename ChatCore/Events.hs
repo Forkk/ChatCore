@@ -27,7 +27,7 @@ data ClientCommand =
         , sendMsgContent    :: T.Text           -- Content of the message.
         } |
     JoinChannel ChatNetworkId ChatChan |
-    PartChannel ChatNetworkId ChatChan T.Text
+    PartChannel ChatNetworkId ChatChan (Maybe T.Text)
     deriving (Show, Typeable)
 
 

@@ -73,7 +73,7 @@ data CoreTypeDef = forall ct conn. CoreType ct conn => CoreTypeDef ct
 
 getCoreTypeList :: CoreCtlActor [CoreTypeDef]
 getCoreTypeList = return
-    [ CoreTypeDef $ JSONCoreType $ PortNumber 1337
+    [ CoreTypeDef $ jsonCoreType
     ]
 
 

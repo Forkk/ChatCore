@@ -3,8 +3,14 @@
 -- Core's internal event system through a simple JSON interface.
 -- It's not supported by any client, but it provides a good baseline as well as
 -- a good way to test Chat Core's event system.
-module ChatCore.Protocol.JSON where
+module ChatCore.Protocol.JSON
+    ( JSONCoreType
+    , jsonCoreType
+    , JSONConnection
+    ) where
 
+import Control.Applicative
+import Control.Monad
 import Control.Monad.Trans
 import Data.Conduit
 import Data.Maybe
@@ -36,18 +42,26 @@ instance CoreType JSONCoreType JSONConnection where
         liftIO $ putStrLn "JSON core type is listening."
         -- Wait for a connection.
         sock <- liftIO $ listenOn (jsonCorePort coreType)
-        -- Accept the sock.
-        (handle, host, port) <- liftIO $ accept sock
-        -- Create the connection object.
-        let conn = JSONConnection { jcHandle = handle
-                                  , jcRemoteHost = host
-                                  , jcPortNumber = port
-                                  , jcSocket = sock
-                                  }
-        -- Give an IO action that just returns our connection object.
-        -- If we wanted to do any processing, we would do so inside this IO
-        -- action.
-        newConnection $ return conn
+        -- Accept connections.
+        forever $ acceptConnection sock
+
+-- | Accepts a new connection on the given socket.
+acceptConnection :: Socket -> ConnectionListener ()
+acceptConnection sock = do
+    liftIO $ putStrLn "JSON connection listener is awaiting a new connection."
+    -- Accept the sock.
+    (handle, host, port) <- liftIO $ accept sock
+    -- Create the connection object.
+    let conn = JSONConnection {
+          jcHandle = handle
+        , jcRemoteHost = host
+        , jcPortNumber = port
+        , jcSocket = sock
+        }
+    -- Give an IO action that just returns our connection object.
+    -- If we wanted to do any processing, we would do so inside this IO
+    -- action.
+    newConnection $ return conn
 
 
 -- | Data structure representing a JSON core connection.
@@ -60,7 +74,11 @@ data JSONConnection = JSONConnection
 
 instance CoreProtocol JSONConnection where
     eventListener conn =
-        src $= (CL.mapM_ $ B.putStrLn) --(CL.map $ decodeStrict) $= (CL.filter $ isJust) $= (CL.map $ fromJust)
+        src $= (CL.map $ decodeStrict)
+            $= (CL.filter $ isJust)
+            $= (CL.map $ fromJust)
+            $= (CL.mapM $ \c -> (putStrLn $ show c) >> return c)
+        --src $= (CL.mapM_ $ B.putStrLn)
       where
         src = (yield =<< (lift $ B.hGetLine $ jcHandle conn)) >> src
 
@@ -68,14 +86,39 @@ instance CoreProtocol JSONConnection where
         BL.hPutStr (jcHandle conn) $ encode msg
 
 
--- JSON Parsing
+-- {{{ JSON
+
+-- {{{ JSON Parsing
+
 instance FromJSON ClientCommand where
-    parseJSON _ = do
-        return $ SendMessage "placeholder" "#channel" "This is a placeholder."
+    parseJSON (Object obj) = do
+        cmdType <- obj .: "command"
+        case cmdType :: T.Text of
+             "sendmsg" -> SendMessage
+                <$> obj .:   "network"
+                <*> obj .:   "dest"
+                <*> obj .:   "message"
+             "joinchan" -> JoinChannel
+                <$> obj .:   "network"
+                <*> obj .:   "channel"
+             "partchan" -> PartChannel
+                <$> obj .:   "network"
+                <*> obj .:   "channel"
+                <*> obj .:?  "message"
+
+-- }}}
+
+-- {{{ JSON Serializing
 
 instance ToJSON CoreEvent where
-    toJSON _ = object
-        [ "event"       .= ("test" :: T.Text)
-        , "message"     .= ("Hello world!" :: T.Text)
+    toJSON evt@(ReceivedMessage {}) = object
+        [ "event"       .= ("recvmsg" :: T.Text)
+        , "source"      .= recvMsgSource evt
+        , "sender"      .= recvMsgSender evt
+        , "message"     .= recvMsgContent evt
         ]
+
+-- }}}
+
+-- }}}
 

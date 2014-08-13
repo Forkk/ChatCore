@@ -63,11 +63,11 @@ actor.
 >       ctype -> conn, conn -> ctype where
 >     coreTypeName :: ctype -> T.Text
 >     coreTypeDesc :: ctype -> T.Text
->     connectionListener :: ctype -> ConnectionSource
+>     connectionListener :: ctype -> ConnectionListener ()
 
 This function hides the fact that the connection listener is an actor.
 
-> newConnection :: (CoreProtocol conn) => IO conn -> ConnectionSource
+> newConnection :: (CoreProtocol conn) => IO conn -> ConnectionListener ()
 > newConnection connAction = do
 >     addr <- ask
 >     lift $ send addr $ CoreNewConnection connAction
@@ -85,7 +85,7 @@ This function is used to start a connection listener.
 > instance ActorMessage ConnListenerMsg
 > type ConnListenerHandle = ActorHandle ConnListenerMsg
 >
-> type ConnectionSource = ReaderT CoreCtlHandle (ActorM ConnListenerMsg) ()
+> type ConnectionListener = ReaderT CoreCtlHandle (ActorM ConnListenerMsg)
 > 
 > runConnListener :: CoreType ct conn =>
 >                    CoreCtlHandle -> ct -> ActorM ConnListenerMsg ()

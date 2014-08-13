@@ -66,9 +66,9 @@ data AddConnEvent = AddConn ClientConnection deriving (Typeable)
 
 
 data UserCtlState = UserCtlState
-    { usNetCtls :: M.Map ChatNetworkId NetCtlHandle -- Network controller handles for the user's networks.
-    , usClients :: [ClientConnection] -- The clients connected as this user.
-    , usUserId  :: UserId
+    { usNetCtls     :: M.Map ChatNetworkId NetCtlHandle -- Network controller handles for the user's networks.
+    , usClients     :: [ClientConnection] -- The clients connected as this user.
+    , usUserId      :: UserId
     }
 
 instance Default UserCtlState where
@@ -146,6 +146,18 @@ userController = do
          UserCtlNewConnection conn -> handleNewConnection conn
     userController
 
+
+-- }}}
+
+-- {{{ Client listener actor
+
+clientCmdListener :: UserCtlHandle -> EventSource -> ActorM () ()
+clientCmdListener userCtl src = tsrc $$ awaitForever $ \cmd ->
+    -- Read from the event source and forward messages to the user controller.
+    lift (send userCtl $ UserCtlClientCommand cmd)
+  where
+    tsrc = transPipe liftIO src
+
 -- }}}
 
 -- {{{ Event handlers
@@ -168,10 +180,13 @@ handleCoreEvent msg = do
 
 -- | Handles connection listener events.
 handleNewConnection :: ClientConnection -> UserCtlActor ()
-handleNewConnection conn = do
-    liftIO $ putStrLn "New connection."
+handleNewConnection cc@(ClientConnection conn) = do
+    me <- lift self
+    -- Start a client listener for the connection.
+    clhandle <- liftIO $ spawnActor $ clientCmdListener me $ eventListener conn
+    -- Add the connection to our connection list.
     modify $ \s -> do
-        s { usClients = conn : usClients s }
+        s { usClients = cc : usClients s }
 
 -- }}}
 
