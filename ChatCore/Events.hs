@@ -41,5 +41,6 @@ data CoreEvent =
         , recvMsgSource     :: ChatSource       -- The source this message was received on (channel or user PM).
         , recvMsgSender     :: Nick             -- The nick of the user who sent the message.
         , recvMsgContent    :: T.Text           -- The content of the message.
-        } deriving (Show, Typeable)
+        }
+    deriving (Show, Typeable)
 

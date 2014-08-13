@@ -151,14 +151,10 @@ handleClientCmd (SendMessage _ dest msg) = ncIRC $ sendPrivMsgCmd dest msg
 handleLine :: IRCLine -> NetCtlActor ()
 -- Handle PING
 handleLine (IRCLine _ (IRCCommand "PING") _ addr) = do
-    liftIO $ putStrLn ("PING from " ++ show addr)
     ncIRC $ sendPongCmd addr
 
 -- PRIVMSG and NOTICE
 handleLine (IRCLine (Just sender) (IRCCommand "PRIVMSG") [source] (Just msg)) = do
-    liftIO $ T.putStrLn ("PRIVMSG from " `T.append` (T.pack $ show sender)
-                        `T.append` " on " `T.append` source `T.append`
-                        ": " `T.append` msg)
     netid <- gets nsId
     sendCoreEvent $ ReceivedMessage
         { recvMsgNetwork = netid
@@ -167,7 +163,9 @@ handleLine (IRCLine (Just sender) (IRCCommand "PRIVMSG") [source] (Just msg)) = 
         , recvMsgContent = msg
         }
 
-handleLine line = liftIO $ putStrLn ("Got unknown line: " ++ show line)
+handleLine line =
+    return ()
+    -- liftIO $ putStrLn ("Got unknown line: " ++ show line)
 
 -- }}}
 

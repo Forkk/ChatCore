@@ -17,8 +17,10 @@ import Data.Maybe
 import qualified Data.Conduit.List as CL
 import Data.Aeson
 import qualified Data.ByteString as B
-import qualified Data.ByteString.Lazy as BL
 import qualified Data.Text as T
+import qualified Data.Text.Lazy as TL
+import qualified Data.Text.Lazy.IO as TL
+import qualified Data.Text.Lazy.Encoding as TL
 import Data.Typeable
 import Network
 import System.IO
@@ -77,14 +79,14 @@ instance CoreProtocol JSONConnection where
         src $= (CL.map $ decodeStrict)
             $= (CL.filter $ isJust)
             $= (CL.map $ fromJust)
-            $= (CL.mapM $ \c -> (putStrLn $ show c) >> return c)
+            -- $= (CL.mapM $ \c -> (putStrLn $ show c) >> return c)
         --src $= (CL.mapM_ $ B.putStrLn)
       where
         src = (yield =<< (lift $ B.hGetLine $ jcHandle conn)) >> src
 
     sendEvent conn msg = do
-        BL.hPutStr (jcHandle conn) $ encode msg
-
+        let h = jcHandle conn
+        TL.hPutStrLn h $ TL.decodeUtf8 $ encode msg
 
 -- {{{ JSON
 
@@ -113,6 +115,7 @@ instance FromJSON ClientCommand where
 instance ToJSON CoreEvent where
     toJSON evt@(ReceivedMessage {}) = object
         [ "event"       .= ("recvmsg" :: T.Text)
+        , "source"      .= recvMsgNetwork evt
         , "source"      .= recvMsgSource evt
         , "sender"      .= recvMsgSender evt
         , "message"     .= recvMsgContent evt

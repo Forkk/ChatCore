@@ -174,7 +174,6 @@ handleClientCommand msg@(PartChannel netId _ _) = forwardClientCmd netId msg
 -- | Handles core events from the network controller.
 handleCoreEvent :: CoreEvent -> UserCtlActor ()
 handleCoreEvent msg = do
-    liftIO $ print msg
     gets usClients >>= (mapM_ $ \(ClientConnection conn) -> liftIO $ sendEvent conn msg)
 
 
