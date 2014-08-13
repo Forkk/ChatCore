@@ -143,29 +143,42 @@ handleClientCmd (JoinChannel _ chan) = ncIRC $ sendJoinCmd chan
 handleClientCmd (PartChannel _ chan msg) =
     ncIRC $ sendPartCmd chan $ fromMaybe "Leaving" msg
 
-handleClientCmd (SendMessage _ dest msg) = ncIRC $ sendPrivMsgCmd dest msg
+handleClientCmd (SendMessage _ dest msg MtPrivmsg) =
+    ncIRC $ sendPrivMsgCmd dest msg
+handleClientCmd (SendMessage _ dest msg MtNotice) =
+    ncIRC $ sendNoticeCmd dest msg
 
 
 
 -- | Handles an IRC line.
 handleLine :: IRCLine -> NetCtlActor ()
 -- Handle PING
-handleLine (IRCLine _ (IRCCommand "PING") _ addr) = do
+handleLine (IRCLine _ (ICPing) _ addr) = do
     ncIRC $ sendPongCmd addr
 
 -- PRIVMSG and NOTICE
-handleLine (IRCLine (Just sender) (IRCCommand "PRIVMSG") [source] (Just msg)) = do
+handleLine (IRCLine (Just sender) (ICmdPrivmsg) [source] (Just msg)) = do
     netid <- gets nsId
     sendCoreEvent $ ReceivedMessage
         { recvMsgNetwork = netid
         , recvMsgSource = source
         , recvMsgSender = sender
         , recvMsgContent = msg
+        , recvMsgType = MtPrivmsg
+        }
+handleLine (IRCLine (Just sender) (ICmdNotice) [source] (Just msg)) = do
+    netid <- gets nsId
+    sendCoreEvent $ ReceivedMessage
+        { recvMsgNetwork = netid
+        , recvMsgSource = source
+        , recvMsgSender = sender
+        , recvMsgContent = msg
+        , recvMsgType = MtNotice
         }
 
+
 handleLine line =
-    return ()
-    -- liftIO $ putStrLn ("Got unknown line: " ++ show line)
+    liftIO $ putStrLn ("Got unknown line: " ++ show line)
 
 -- }}}
 

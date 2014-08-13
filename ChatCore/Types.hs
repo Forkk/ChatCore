@@ -26,6 +26,10 @@ type ChatChan = T.Text
 type UserId = T.Text
 
 
+-- | Identifies the type of a message (i.e. PRIVMSG, NOTICE, etc.)
+data MessageType = MtPrivmsg | MtNotice deriving Show
+
+
 -- | Data structure which describes an IRC network entry.
 data IRCNetwork = IRCNetwork
     { inName        :: ChatNetworkId    -- The IRC network's name.

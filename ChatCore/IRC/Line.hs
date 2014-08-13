@@ -1,8 +1,9 @@
+{-# LANGUAGE TemplateHaskell #-}
 -- Module containing functions and data types for parsing lines from IRC.
 module ChatCore.IRC.Line
     ( IRCLine (IRCLine)
     , IRCSource
-    , IRCCommand (IRCCommand)
+    , IRCCommand (..)
 
     , ilSourceStr
     , ilCommand
@@ -29,6 +30,8 @@ import Text.Parsec
 import Text.Parsec.ByteString
 import Test.HUnit
 
+import ChatCore.IRC.Commands
+
 -- {{{ Interface and data types
 
 -- | Represents a line's source string.
@@ -39,9 +42,6 @@ type IRCArgument = T.Text
 
 -- | Represents the body of an IRC line.
 type IRCBody = T.Text
-
--- | Represents the 'command' part of an IRC line.
-data IRCCommand = IRCCommand { icCmd :: T.Text } deriving (Show, Eq)
 
 
 -- | Represents a line in the IRC protocol.
@@ -106,7 +106,7 @@ sourceString = do
 
 -- | Parser which parses a command.
 command :: Parser IRCCommand
-command = IRCCommand <$> segment
+command = icmdFromStr <$> segment
 
 -- | Parser which parses a single argument.
 argument :: Parser IRCArgument
@@ -132,7 +132,7 @@ lineToByteString line = BL.toStrict $ TL.encodeUtf8 $ TL.toLazyText $ lineTextBu
 lineTextBuilder :: IRCLine -> TL.Builder
 lineTextBuilder line =
        maybe mempty (\t -> TL.singleton ':' <> textAndSpace t) (ilSourceStr line)
-    <> (TL.fromText $ icCmd $ ilCommand line)
+    <> (TL.fromText $ icmdToStr $ ilCommand line)
     <> (mconcat $ map spaceAndText $ ilArgs line)
     <> maybe mempty (\t -> TL.fromText " :" <> TL.fromText t) (ilBody line)
   where
@@ -164,7 +164,7 @@ lineParserTest1 = ircLineTestCase "parse line with arguments, source, and body"
     ":Forkk!~forkk@awesome/forkk PRIVMSG #channel :test body content"
     IRCLine
         { ilSourceStr   = Just "Forkk!~forkk@awesome/forkk"
-        , ilCommand     = IRCCommand "PRIVMSG"
+        , ilCommand     = ICPrivmsg
         , ilArgs        = ["#channel"]
         , ilBody        = Just "test body content"
         }
@@ -173,7 +173,7 @@ lineParserTest2 = ircLineTestCase "parse line with arguments and body, but no so
     "PRIVMSG #channel :test body content"
     IRCLine
         { ilSourceStr   = Nothing
-        , ilCommand     = IRCCommand "PRIVMSG"
+        , ilCommand     = ICPrivmsg
         , ilArgs        = ["#channel"]
         , ilBody        = Just "test body content"
         }
@@ -182,7 +182,7 @@ lineParserTest3 = ircLineTestCase "parse line with source and body, but no argum
     ":Forkk!~forkk@awesome/forkk PRIVMSG :test body content"
     IRCLine
         { ilSourceStr   = Just "Forkk!~forkk@awesome/forkk"
-        , ilCommand     = IRCCommand "PRIVMSG"
+        , ilCommand     = ICPrivmsg
         , ilArgs        = []
         , ilBody        = Just "test body content"
         }
@@ -191,7 +191,7 @@ lineParserTest4 = ircLineTestCase "parse line with source and arguments, but no 
     ":Forkk!~forkk@awesome/forkk PRIVMSG #channel"
     IRCLine
         { ilSourceStr   = Just "Forkk!~forkk@awesome/forkk"
-        , ilCommand     = IRCCommand "PRIVMSG"
+        , ilCommand     = ICPrivmsg
         , ilArgs        = ["#channel"]
         , ilBody        = Nothing
         }

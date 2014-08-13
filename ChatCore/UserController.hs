@@ -166,9 +166,9 @@ clientCmdListener userCtl src = tsrc $$ awaitForever $ \cmd ->
 handleClientCommand :: ClientCommand -> UserCtlActor ()
 
 -- Network controller commands.
-handleClientCommand msg@(SendMessage netId _ _) = forwardClientCmd netId msg
-handleClientCommand msg@(JoinChannel netId _)   = forwardClientCmd netId msg
-handleClientCommand msg@(PartChannel netId _ _) = forwardClientCmd netId msg
+handleClientCommand msg@(SendMessage netId _ _ _) = forwardClientCmd netId msg
+handleClientCommand msg@(JoinChannel netId _)     = forwardClientCmd netId msg
+handleClientCommand msg@(PartChannel netId _ _)   = forwardClientCmd netId msg
 
 
 -- | Handles core events from the network controller.

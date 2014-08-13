@@ -1,39 +1,21 @@
--- | Module with functions for sending specific commands to the IRC server.
+{-# LANGUAGE TemplateHaskell #-}
+-- | Module for the IRC library's IRC command type definitions.
 module ChatCore.IRC.Commands where
 
-import qualified Data.Text as T
+import Data.Text
+import ChatCore.IRC.TH
 
-import ChatCore.IRC
-import ChatCore.IRC.Line
-import ChatCore.Types
+defineIRCCmds
+    [ ("ICmdPrivmsg", "PRIVMSG")
+    , ("ICmdNotice",  "NOTICE")
+    
+    , ("ICmdJoin", "JOIN")
+    , ("ICmdPart", "PART")
 
-sendPongCmd :: Maybe T.Text -> IRC ()
-sendPongCmd host =
-    sendLine $ IRCLine Nothing (IRCCommand "PONG") [] host
+    , ("ICmdNick", "NICK")
+    , ("ICmdUser", "USER")
 
-sendNickCmd :: Nick -> IRC ()
-sendNickCmd nick =
-    sendLine $ IRCLine Nothing (IRCCommand "NICK") [nick] Nothing
-
-sendUserCmd :: T.Text -> T.Text -> IRC ()
-sendUserCmd username realname =
-    sendLine $ IRCLine Nothing (IRCCommand "USER") [username, "*", "*"] (Just realname)
-
-
-sendPrivMsgCmd :: ChatDest -> T.Text -> IRC ()
-sendPrivMsgCmd dest msg =
-    sendLine $ IRCLine Nothing (IRCCommand "PRIVMSG") [dest] (Just msg)
-
-sendNoticeCmd :: ChatDest -> T.Text -> IRC ()
-sendNoticeCmd dest msg =
-    sendLine $ IRCLine Nothing (IRCCommand "NOTICE") [dest] (Just msg)
-
-
-sendJoinCmd :: ChatChan -> IRC ()
-sendJoinCmd chan =
-    sendLine $ IRCLine Nothing (IRCCommand "JOIN") [chan] Nothing
-
-sendPartCmd :: ChatChan -> T.Text -> IRC ()
-sendPartCmd chan msg =
-    sendLine $ IRCLine Nothing (IRCCommand "PART") [chan] (Just msg)
+    , ("ICmdPing", "PING")
+    , ("ICmdPong", "PONG")
+    ]
 

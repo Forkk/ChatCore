@@ -100,13 +100,19 @@ instance FromJSON ClientCommand where
                 <$> obj .:   "network"
                 <*> obj .:   "dest"
                 <*> obj .:   "message"
+                <*> obj .:?  "msgtype" .!= MtPrivmsg
              "joinchan" -> JoinChannel
                 <$> obj .:   "network"
                 <*> obj .:   "channel"
              "partchan" -> PartChannel
                 <$> obj .:   "network"
                 <*> obj .:   "channel"
-                <*> obj .:?  "message"
+                <*> obj .:   "message"
+
+instance FromJSON MessageType where
+    parseJSON (String "PRIVMSG") = return MtPrivmsg
+    parseJSON (String "NOTICE") = return MtNotice
+    parseJSON _ = empty
 
 -- }}}
 
@@ -119,7 +125,12 @@ instance ToJSON CoreEvent where
         , "source"      .= recvMsgSource evt
         , "sender"      .= recvMsgSender evt
         , "message"     .= recvMsgContent evt
+        , "msgtype"     .= recvMsgType evt
         ]
+
+instance ToJSON MessageType where
+    toJSON (MtPrivmsg) = String "PRIVMSG"
+    toJSON (MtNotice) = String "NOTICE"
 
 -- }}}
 

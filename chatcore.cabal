@@ -96,6 +96,7 @@ executable chatcore
     , stm-conduit                   >=2.5   && <2.6
     , HUnit                         >=1.2   && <1.3
     , hactor                        ==1.0.*
+    , template-haskell
   
   -- Base language which the package is written in.
   default-language: Haskell2010
