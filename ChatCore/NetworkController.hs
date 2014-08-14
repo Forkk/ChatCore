@@ -23,7 +23,6 @@ import ChatCore.IRC
 import ChatCore.IRC.Commands
 import ChatCore.Protocol
 import ChatCore.Types
-import ChatCore.Util.ActorUtil
 import ChatCore.Util.StateActor
 import {-# SOURCE #-} ChatCore.UserController
 
@@ -48,15 +47,15 @@ startNetCtl :: IRCNetwork -> UserCtlHandle -> IO NetCtlHandle
 startNetCtl ircNet ucAddr = do
     let host = servAddress $ head $ inServers ircNet
         port = servPort $ head $ inServers ircNet
-    connection <- connectIRC host port
     hand <- spawnActor $ initNetCtlActor $ NetCtlState
         { nsId = inName ircNet
         , netNick = head $ inNicks ircNet
         , netChannels = inChannels ircNet
         -- TODO: Server list stuff.
-        , netAddress = host
+        , netHost = host
         , netPort = port
-        , ircConnection = connection
+        -- Will connect on startup.
+        , ircConnection = undefined
         , userCtlAddr = ucAddr
         }
     return hand -- NetCtlHandle (inName ircNet) addr
@@ -70,7 +69,7 @@ data NetCtlState = NetCtlState
     { nsId          :: ChatNetworkId    -- The ID name of this network.
     , netNick       :: Nick             -- The current user's nick.
     , netChannels   :: [ChatChan]       -- A list of channels the current user is in.
-    , netAddress    :: HostName
+    , netHost       :: HostName
     , netPort       :: PortID
     , ircConnection :: IRCConnection    -- The IRC connection.
     , userCtlAddr   :: UserCtlHandle    -- The user controller.
@@ -95,7 +94,12 @@ receiveActor ncActor conn = do
 
 -- | Initializes a network controller with the given state.
 initNetCtlActor :: NetCtlState -> ActorM NetCtlActorMsg ()
-initNetCtlActor state = do
+initNetCtlActor istate = do
+    -- Connect to IRC.
+    liftIO $ putStrLn "Connecting to IRC..."
+    connection <- liftIO $ connectIRC (netHost istate) (netPort istate)
+    let state = istate { ircConnection = connection }
+    liftIO $ putStrLn "Connection established. Starting network controller."
     -- Spawn the receiver actor.
     me <- self
     recvActor <- lift $ spawnActor $ receiveActor me $ ircConnection state
@@ -153,7 +157,7 @@ handleClientCmd (SendMessage _ dest msg MtNotice) =
 -- | Handles an IRC line.
 handleLine :: IRCLine -> NetCtlActor ()
 -- Handle PING
-handleLine (IRCLine _ (ICPing) _ addr) = do
+handleLine (IRCLine _ (ICmdPing) _ addr) = do
     ncIRC $ sendPongCmd addr
 
 -- PRIVMSG and NOTICE

@@ -8,6 +8,7 @@ module ChatCore.CoreController
 
 import Control.Applicative
 import Control.Concurrent.Actor
+import Control.Monad
 import Control.Monad.Trans
 import Control.Monad.Trans.State
 import Data.Default
@@ -21,7 +22,6 @@ import ChatCore.Protocol
 import ChatCore.Protocol.JSON
 import ChatCore.Types
 import ChatCore.UserController
-import ChatCore.Util.ActorUtil
 import ChatCore.Util.StateActor
 
 
@@ -82,7 +82,7 @@ addUserController :: UserId -> CoreCtlActor ()
 addUserController userId = do
     me <- lift self
     -- Spawn the user controller and link to it.
-    hand <- lift2 $ startUserCtl userId me
+    hand <- liftIO $ startUserCtl userId me
     -- lift $ linkActorHandle hand -- TODO: Implement linking in hactor
     modify $ \s -> do
         s { ccUserCtls = M.insert userId hand $ ccUserCtls s }
@@ -143,15 +143,19 @@ handleNewConnection connAction = do
     conn <- ClientConnection <$> liftIO connAction
     -- TODO: Find the correct user controller to send this to.
     -- For now, we'll just attach it to all of them.
-    mapM_ (lift . (flip send) (UserCtlNewConnection conn))
-        =<< M.elems <$> gets ccUserCtls
+    -- Get a list of the user controllers.
+    userCtls <- M.elems <$> gets ccUserCtls
+    -- Send the message.
+    forM_ userCtls $ sendUserCtl $ UserCtlNewConnection conn
 
 
 -- }}}
 
 -- {{{ Utility functions
 
-lift2 = lift . lift
+-- | Sends the given message to the given user controller.
+sendUserCtl :: UserCtlActorMsg -> UserCtlHandle -> CoreCtlActor ()
+sendUserCtl msg actor = lift $ send actor msg
 
 -- }}}
 

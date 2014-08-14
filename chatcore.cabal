@@ -51,23 +51,28 @@ executable chatcore
 
   -- Modules included in this executable, other than Main.
   other-modules:
-      ChatCore.Types
-
-    , ChatCore.IRC
-    , ChatCore.IRC.Line
+    -- IRC Library
+      ChatCore.IRC
+    , ChatCore.IRC.Actions
     , ChatCore.IRC.Commands
+    , ChatCore.IRC.Connection
+    , ChatCore.IRC.Line
+    , ChatCore.IRC.TH
 
-    , ChatCore.Protocol
-    , ChatCore.Protocol.JSON
-
+    -- Controllers
     , ChatCore.CoreController
     , ChatCore.UserController
     , ChatCore.NetworkController
 
-    , ChatCore.Events
-    , ChatCore.Types
+    -- Core Protocols
+    , ChatCore.Protocol
+    , ChatCore.Protocol.JSON
 
-    , ChatCore.Util.ActorUtil
+    -- Types
+    , ChatCore.Types
+    , ChatCore.Events
+
+    -- Utility
     , ChatCore.Util.StateActor
 
   default-extensions:

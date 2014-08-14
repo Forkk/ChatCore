@@ -10,9 +10,11 @@ module ChatCore.Protocol.JSON
     ) where
 
 import Control.Applicative
+import Control.Error
 import Control.Monad
 import Control.Monad.Trans
 import Data.Conduit
+import Data.Either
 import Data.Maybe
 import qualified Data.Conduit.List as CL
 import Data.Aeson
@@ -75,14 +77,21 @@ data JSONConnection = JSONConnection
     } deriving (Typeable)
 
 instance CoreProtocol JSONConnection where
-    eventListener conn =
-        src $= (CL.map $ decodeStrict)
-            $= (CL.filter $ isJust)
-            $= (CL.map $ fromJust)
+    eventListener conn = do
+        src $= (CL.map $ eitherDecodeStrict)
+            -- Log the error if the parsing failed. Otherwise, convert the
+            -- Either to a Maybe and pass it on.
+            $= (CL.mapMaybeM $ logParseError)
             -- $= (CL.mapM $ \c -> (putStrLn $ show c) >> return c)
         --src $= (CL.mapM_ $ B.putStrLn)
       where
         src = (yield =<< (lift $ B.hGetLine $ jcHandle conn)) >> src
+        -- If the given argument is a parse error message, log it.
+        logParseError (Right cmd) = do
+            return $ Just cmd
+        logParseError (Left err) = do
+            liftIO $ putStrLn ("Error parsing JSON message: " ++ err)
+            return Nothing
 
     sendEvent conn msg = do
         let h = jcHandle conn
@@ -107,7 +116,7 @@ instance FromJSON ClientCommand where
              "partchan" -> PartChannel
                 <$> obj .:   "network"
                 <*> obj .:   "channel"
-                <*> obj .:   "message"
+                <*> obj .:?  "message"
 
 instance FromJSON MessageType where
     parseJSON (String "PRIVMSG") = return MtPrivmsg

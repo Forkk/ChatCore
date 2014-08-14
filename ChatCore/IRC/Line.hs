@@ -164,7 +164,7 @@ lineParserTest1 = ircLineTestCase "parse line with arguments, source, and body"
     ":Forkk!~forkk@awesome/forkk PRIVMSG #channel :test body content"
     IRCLine
         { ilSourceStr   = Just "Forkk!~forkk@awesome/forkk"
-        , ilCommand     = ICPrivmsg
+        , ilCommand     = ICmdPrivmsg
         , ilArgs        = ["#channel"]
         , ilBody        = Just "test body content"
         }
@@ -173,7 +173,7 @@ lineParserTest2 = ircLineTestCase "parse line with arguments and body, but no so
     "PRIVMSG #channel :test body content"
     IRCLine
         { ilSourceStr   = Nothing
-        , ilCommand     = ICPrivmsg
+        , ilCommand     = ICmdPrivmsg
         , ilArgs        = ["#channel"]
         , ilBody        = Just "test body content"
         }
@@ -182,7 +182,7 @@ lineParserTest3 = ircLineTestCase "parse line with source and body, but no argum
     ":Forkk!~forkk@awesome/forkk PRIVMSG :test body content"
     IRCLine
         { ilSourceStr   = Just "Forkk!~forkk@awesome/forkk"
-        , ilCommand     = ICPrivmsg
+        , ilCommand     = ICmdPrivmsg
         , ilArgs        = []
         , ilBody        = Just "test body content"
         }
@@ -191,7 +191,7 @@ lineParserTest4 = ircLineTestCase "parse line with source and arguments, but no 
     ":Forkk!~forkk@awesome/forkk PRIVMSG #channel"
     IRCLine
         { ilSourceStr   = Just "Forkk!~forkk@awesome/forkk"
-        , ilCommand     = ICPrivmsg
+        , ilCommand     = ICmdPrivmsg
         , ilArgs        = ["#channel"]
         , ilBody        = Nothing
         }

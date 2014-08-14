@@ -24,7 +24,6 @@ import Network
 import ChatCore.Events
 import ChatCore.Protocol
 import ChatCore.Types
-import ChatCore.Util.ActorUtil
 import ChatCore.Util.StateActor
 
 import {-# SOURCE #-} ChatCore.CoreController
