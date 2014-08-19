@@ -146,11 +146,11 @@ sendCoreEvent evt = do
     gets userCtlAddr >>= lift . (flip send $ UserCtlCoreEvent $ evt)
 
 -- | Logs the given event.
-logEvent :: BufferId -> LogLineType -> T.Text -> NetCtlActor ()
-logEvent buf ltype text = do
+logEvent :: BufferId -> LogEvent -> NetCtlActor ()
+logEvent buf evt = do
     time <- liftIO getCurrentTime
     chatLog <- gets netChatLog
-    let logLine = LogLine buf time ltype text
+    let logLine = LogLine buf time evt
     liftIO $ writeLogLine chatLog logLine
 
 -- }}}
@@ -187,7 +187,7 @@ handleLine (IRCLine (Just sender) (ICmdPrivmsg) [source] (Just msg)) = do
         , recvMsgContent = msg
         , recvMsgType = MtPrivmsg
         }
-    logEvent source LogMessage (sender `T.append` ": " `T.append` msg)
+    logEvent source $ LogMessage sender msg MtPrivmsg
 handleLine (IRCLine (Just sender) (ICmdNotice) [source] (Just msg)) = do
     netid <- gets nsId
     sendCoreEvent $ ReceivedMessage
@@ -197,7 +197,7 @@ handleLine (IRCLine (Just sender) (ICmdNotice) [source] (Just msg)) = do
         , recvMsgContent = msg
         , recvMsgType = MtNotice
         }
-    logEvent source LogNotice (sender `T.append` ": " `T.append` msg)
+    logEvent source $ LogMessage sender msg MtNotice
 
 
 handleLine line =

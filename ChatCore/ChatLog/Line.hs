@@ -1,20 +1,15 @@
 module ChatCore.ChatLog.Line
     ( LogLine (..)
-
-    , LogLineType (..)
-
-    , logLineToString
-    , parseLogLine
+    , LogEvent (..)
 
     , BufferId
-    , formatTime'
-    , parseTime'
     ) where
 
 import Control.Applicative hiding (many)
 import Control.Error
-import Data.Monoid
+import Data.Aeson
 import qualified Data.ByteString as B
+import Data.Monoid
 import qualified Data.Text as T
 import qualified Data.Text.Lazy as TL
 import qualified Data.Text.Lazy.Builder as TL
@@ -25,59 +20,88 @@ import Data.Time.Format
 import Text.Parsec
 import System.Locale
 
+import ChatCore.Types
 import ChatCore.Util.Parsec
 
 type BufferId = T.Text
 
-data LogLineType
+-- | Represents an event in the chat log.
+data LogEvent
     = LogMessage
-    | LogNotice
-    | LogJoin
-    | LogPart
-    deriving (Show, Read, Eq)
+        { logMsgSender  :: User 
+        , logMsgContent :: T.Text
+        , logMsgType    :: MessageType
+        }
+    | LogJoin User
+    | LogPart User
+    | LogQuit User
+    deriving (Show, Eq)
 
 -- | Represents a line in a chat log.
 data LogLine = LogLine
     { logLineBuffer :: BufferId
     , logLineTime   :: UTCTime
-    , logLineType   :: LogLineType
-    , logLineText   :: T.Text
+    , logLineEvent  :: LogEvent
     } deriving (Show)
 
+-- {{{ JSON
 
-timeFormat = "%Y-%m-%d %H:%M:%S UTC"
+-- {{{ JSON to Events
 
-formatTime' = formatTime defaultTimeLocale timeFormat
-parseTime' = parseTime defaultTimeLocale timeFormat
+instance FromJSON LogEvent where
+    parseJSON (Object obj) = do
+        evtType <- obj .: "event"
+        case evtType :: T.Text of
+             "message" -> LogMessage
+                <$> obj .: "sender"
+                <*> obj .: "message"
+                <*> obj .: "msgtype"
+             "join" -> LogJoin <$> obj .: "user"
+             "part" -> LogPart <$> obj .: "user"
+             "quit" -> LogQuit <$> obj .: "user"
 
+-- }}}
 
--- | Formats a log line as a string.
-logLineToString :: LogLine -> TL.Text
-logLineToString line = TL.toLazyText $ logLineBuilder line
-  where
-    logLineBuilder line =
-           TL.fromText "["
-        -- TODO: May need to make a custom builder for this, unless we can
-        -- parse the timestamp in whatever format this generates.
-        <> (TL.fromString $ formatTime' $ logLineTime line)
-        <> TL.fromText "|"
-        <> (TL.fromString $ show $ logLineType line)
-        <> TL.fromText "]: "
-        <> (TL.fromText $ logLineText line)
+-- {{{ Events to JSON
 
-parseLogLine :: BufferId -> B.ByteString -> Maybe LogLine
-parseLogLine buf str = hush $ parse parser "Chat Log Line" str
-  where
-    parser = do
-        char '['
-        timeM <- parseTime' <$> many (noneOf "|")
-        char '|'
-        ltype <- read <$> many (noneOf "]")
-        char ']'
-        char ':'
-        char ' '
-        text <- T.pack <$> many (anyChar)
-        case timeM of
-             Just time -> return $ LogLine buf time ltype text
-             Nothing -> fail "Invalid timestamp string."
+instance ToJSON LogEvent where
+    toJSON evt@(LogMessage {}) = object
+        [ "event"       .= ("message" :: T.Text)
+        , "sender"      .= logMsgSender evt
+        , "message"     .= logMsgContent evt
+        , "msgtype"     .= logMsgType evt
+        ]
+    toJSON evt@(LogJoin user) = object
+        [ "event" .= ("join" :: T.Text)
+        , "user"  .= user
+        ]
+    toJSON evt@(LogPart user) = object
+        [ "event" .= ("part" :: T.Text)
+        , "user"  .= user
+        ]
+    toJSON evt@(LogQuit user) = object
+        [ "event" .= ("quit" :: T.Text)
+        , "user"  .= user
+        ]
+
+-- }}}
+
+-- {{{ Log Line JSON
+
+instance FromJSON LogLine where
+    -- The buffer name is not included in the line. It will be added by the
+    -- readLogFile function.
+    parseJSON (Object obj) = LogLine ""
+        <$> obj .: "time"
+        <*> obj .: "event"
+
+instance ToJSON LogLine where
+    toJSON line = object
+        [ "time"    .= logLineTime line
+        , "event"   .= logLineEvent line
+        ]
+
+-- }}}
+
+-- }}}
 

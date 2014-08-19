@@ -118,11 +118,6 @@ instance FromJSON ClientCommand where
                 <*> obj .:   "channel"
                 <*> obj .:?  "message"
 
-instance FromJSON MessageType where
-    parseJSON (String "PRIVMSG") = return MtPrivmsg
-    parseJSON (String "NOTICE") = return MtNotice
-    parseJSON _ = empty
-
 -- }}}
 
 -- {{{ JSON Serializing
@@ -136,10 +131,6 @@ instance ToJSON CoreEvent where
         , "message"     .= recvMsgContent evt
         , "msgtype"     .= recvMsgType evt
         ]
-
-instance ToJSON MessageType where
-    toJSON (MtPrivmsg) = String "PRIVMSG"
-    toJSON (MtNotice) = String "NOTICE"
 
 -- }}}
 

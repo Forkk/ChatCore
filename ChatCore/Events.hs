@@ -36,7 +36,7 @@ data CoreEvent
     = ReceivedMessage
         { recvMsgNetwork    :: ChatNetworkId    -- The network on which the message was received.
         , recvMsgSource     :: ChatSource       -- The buffer this message was received on (channel or user PM).
-        , recvMsgSender     :: Nick             -- The nick of the user who sent the message.
+        , recvMsgSender     :: User             -- The the user who sent the message.
         , recvMsgContent    :: T.Text           -- The content of the message.
         , recvMsgType       :: MessageType      -- The type of message (PRIVMSG or NOTICE).
         }

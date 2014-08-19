@@ -21,12 +21,13 @@ import Control.Monad
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Resource
 import Control.Monad.Trans.State
-import Data.Conduit
-import Data.IORef
+import Data.Aeson
 import Data.List
 import Data.Maybe
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as B8
+import qualified Data.ByteString.Lazy as BL
+import qualified Data.ByteString.Lazy.Char8 as BL8
 import qualified Data.Map as M
 import qualified Data.Text as T
 import qualified Data.Text.Lazy as TL
@@ -78,7 +79,7 @@ loadChatLog clogDir = do
 writeLogLine :: ChatLog -> LogLine -> IO ()
 writeLogLine log line = do
     ensureExists bufDir
-    TL.appendFile logFile (logLineToString line `TL.append` "\n")
+    BL.appendFile logFile (encode line `BL8.append` "\n")
   where
     bufDir = chatLogDir log </> T.unpack (logLineBuffer line)
     logFile = bufDir </> logFileName (logFileForLine line)
@@ -117,9 +118,10 @@ readLog log bufId startTime = do
 -- | Reads the given log file in the given buffer in the given chat log.
 readLogFile :: ChatLog -> BufferId -> LogFileId -> IO [LogLine]
 readLogFile log bufId fid =
-    mapMaybe (parseLogLine bufId) <$> B8.lines <$> B.readFile logPath
+    map setBufId <$> mapMaybe decode <$> BL8.lines <$> BL.readFile logPath
   where
     logPath = chatLogDir log </> T.unpack bufId </> logFileName fid
+    setBufId line = line { logLineBuffer = bufId }
 
 -- }}}
 
