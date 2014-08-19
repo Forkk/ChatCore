@@ -2,11 +2,14 @@ module ChatCore.ChatLog.File
     ( LogFileId (..)
 
     , logFileForDate
+    , dayForLogFile
     , logFileForToday
     , logFileForLine
     , logFileName
 
     , parseLogFileId
+
+    , logFilesInDir
 
     , LogLine (..)
     ) where
@@ -21,10 +24,12 @@ import Control.Monad.Trans.Resource
 import Data.Conduit
 import qualified Data.Conduit.List as CL
 import qualified Data.Text as T
+import qualified Data.Text.IO as T
 import Data.Time.Calendar
 import Data.Time.Clock
-import System.IO
+import System.Directory
 import System.FilePath
+import System.IO
 import Text.Parsec
 import Text.Printf
 
@@ -35,7 +40,13 @@ data LogFileId = LogFileId
     { lfDay     :: Int
     , lfMonth   :: Int
     , lfYear    :: Integer
-    } deriving (Show, Eq, Ord)
+    } deriving (Show, Eq)
+
+instance Ord LogFileId where
+    a <= b =
+        (lfYear  a <= lfYear  b) ||
+        (lfMonth a <= lfMonth b) ||
+        (lfDay   a <= lfDay   b)
 
 -- {{{ Date <-> ID conversions
 
@@ -48,6 +59,11 @@ logFileForDate :: UTCTime -> LogFileId
 logFileForDate date = LogFileId day month year
   where
     (year, month, day) = toGregorian $ utctDay date
+
+-- | Gets the UTCTime day for the given log file.
+dayForLogFile :: LogFileId -> Day
+dayForLogFile (LogFileId day month year) = fromGregorian year month day
+
 
 -- | Gets the log file ID that the given line should be written to.
 logFileForLine :: LogLine -> LogFileId
@@ -70,6 +86,15 @@ parseLogFileId idStr = hush $ parse parser "Log File ID" idStr
         return $ LogFileId day month year
     -- Read n many digits and parse them as an integer.
     numSize n = read <$> (count n $ digit)
+
+-- }}}
+
+-- {{{ Listing
+
+-- | Gets a list of log files at the given path.
+logFilesInDir :: FilePath -> IO [LogFileId]
+logFilesInDir dir =
+    mapMaybe parseLogFileId <$> map takeFileName <$> getDirectoryContents dir
 
 -- }}}
 

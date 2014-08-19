@@ -31,6 +31,7 @@ import Text.Parsec.ByteString
 import Test.HUnit
 
 import ChatCore.IRC.Commands
+import ChatCore.Util.Parsec
 
 -- {{{ Interface and data types
 
@@ -85,16 +86,7 @@ lineParser = do
 -- | Parses one segment of an IRC line.
 -- A segment is one of the line's space separated tokens.
 segment :: Parser T.Text
-segment = T.pack <$> segChars
-  where
-    segChars = do
-        -- Read a character.
-        c <- anyChar
-        if c == ' '
-           -- If it's a space, we're done.
-           then return []
-           -- Otherwise, parse the rest of the segment.
-           else (c:) <$> (segChars <|> (eof >> return []))
+segment = charsUntil ' '
 
 -- | Parser which parses the source string at the beginning of a line.
 -- Will fail and consume no input if no source string is present.
