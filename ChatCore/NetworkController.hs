@@ -15,14 +15,18 @@ import qualified Data.Conduit.List as CL
 import Data.Maybe
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
+import Data.Time.Clock
 import Data.Typeable
 import Network
+import System.FilePath
 
 import ChatCore.Events
 import ChatCore.IRC
 import ChatCore.IRC.Commands
 import ChatCore.Protocol
 import ChatCore.Types
+import ChatCore.ChatLog
+import ChatCore.ChatLog.Line
 import ChatCore.Util.StateActor
 import {-# SOURCE #-} ChatCore.UserController
 
@@ -45,20 +49,24 @@ type NetCtlHandle = ActorHandle NetCtlActorMsg
 
 startNetCtl :: IRCNetwork -> UserCtlHandle -> IO NetCtlHandle
 startNetCtl ircNet ucAddr = do
+    -- Open the chat log for this network.
+    chatLog <- mkChatLog ("log" </> (T.unpack $ inName ircNet))
+    -- Connect to the first server.
+    -- TODO: Implement connecting to other servers in the list.
     let host = servAddress $ head $ inServers ircNet
         port = servPort $ head $ inServers ircNet
     hand <- spawnActor $ initNetCtlActor $ NetCtlState
         { nsId = inName ircNet
         , netNick = head $ inNicks ircNet
         , netChannels = inChannels ircNet
-        -- TODO: Server list stuff.
         , netHost = host
         , netPort = port
         -- Will connect on startup.
         , ircConnection = undefined
         , userCtlAddr = ucAddr
+        , netChatLog = chatLog
         }
-    return hand -- NetCtlHandle (inName ircNet) addr
+    return hand
 
 -- }}}
 
@@ -73,6 +81,7 @@ data NetCtlState = NetCtlState
     , netPort       :: PortID
     , ircConnection :: IRCConnection    -- The IRC connection.
     , userCtlAddr   :: UserCtlHandle    -- The user controller.
+    , netChatLog    :: ChatLog          -- The chat log for this network.
     }
 
 -- | State monad for the network controller actor.
@@ -136,6 +145,14 @@ sendCoreEvent :: CoreEvent -> NetCtlActor ()
 sendCoreEvent evt = do
     gets userCtlAddr >>= lift . (flip send $ UserCtlCoreEvent $ evt)
 
+-- | Logs the given event.
+logEvent :: BufferId -> LogLineType -> T.Text -> NetCtlActor ()
+logEvent buf ltype text = do
+    time <- liftIO getCurrentTime
+    chatLog <- gets netChatLog
+    let logLine = LogLine buf time ltype text
+    liftIO $ writeLogLine chatLog logLine
+
 -- }}}
 
 -- {{{ Handler functions
@@ -170,6 +187,7 @@ handleLine (IRCLine (Just sender) (ICmdPrivmsg) [source] (Just msg)) = do
         , recvMsgContent = msg
         , recvMsgType = MtPrivmsg
         }
+    logEvent source LogMessage (sender `T.append` ": " `T.append` msg)
 handleLine (IRCLine (Just sender) (ICmdNotice) [source] (Just msg)) = do
     netid <- gets nsId
     sendCoreEvent $ ReceivedMessage
@@ -179,6 +197,7 @@ handleLine (IRCLine (Just sender) (ICmdNotice) [source] (Just msg)) = do
         , recvMsgContent = msg
         , recvMsgType = MtNotice
         }
+    logEvent source LogNotice (sender `T.append` ": " `T.append` msg)
 
 
 handleLine line =

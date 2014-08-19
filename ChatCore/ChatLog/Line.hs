@@ -38,7 +38,7 @@ data LogLineType
 
 -- | Represents a line in a chat log.
 data LogLine = LogLine
-    { logLineBuffer :: T.Text
+    { logLineBuffer :: BufferId
     , logLineTime   :: UTCTime
     , logLineType   :: LogLineType
     , logLineText   :: T.Text
