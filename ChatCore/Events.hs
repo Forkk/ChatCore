@@ -8,8 +8,11 @@
 -- situation. Client commands are sent to the chat controller.
 module ChatCore.Events where
 
+import Control.Applicative
+import Data.Aeson
+import Data.Aeson.Types
+import Data.Maybe
 import qualified Data.Text as T
-import Data.Typeable
 
 import ChatCore.Types
 
@@ -25,22 +28,77 @@ data ClientCommand
         }
     | JoinChannel ChatNetworkId ChatChan
     | PartChannel ChatNetworkId ChatChan (Maybe T.Text)
-    deriving (Show, Typeable)
+    deriving (Show)
 
 
 -- | Data structure representing a Chat Core core event.
---   A core event represents something that happened on the server that needs
---   to be translated into a message that the client can understand.
+-- A core event represents something that happened on the server that needs to
+-- be translated into a message that the client can understand.
 data CoreEvent
+    -- | Wrapper for `BufferCoreEvent`s. These are events that relate to a
+    -- specific buffer.
+    = BufCoreEvent ChatNetworkId ChatBufferId BufferEvent
+
+-- | Data structure for core events that relate to a specific buffer.
+-- These events are usually wrapped in the `CoreEvent` object's `BufCoreEvent`
+-- constructor.
+data BufferEvent
     -- | Represents a new message from the given source.
     = ReceivedMessage
-        { recvMsgNetwork    :: ChatNetworkId    -- The network on which the message was received.
-        , recvMsgSource     :: ChatSource       -- The buffer this message was received on (channel or user PM).
-        , recvMsgSender     :: User             -- The the user who sent the message.
+        { recvMsgSender     :: User             -- The the user who sent the message.
         , recvMsgContent    :: T.Text           -- The content of the message.
         , recvMsgType       :: MessageType      -- The type of message (PRIVMSG or NOTICE).
         }
-    -- | Event for when a new buffer (private message or channel) is added.
-    | BufferAdded ChatNetworkId ChatSource
-    deriving (Show, Typeable)
+    | UserJoin User
+    | UserPart User (Maybe T.Text)
+    | UserQuit User (Maybe T.Text)
+    deriving (Show, Eq)
+
+-- {{{ Buffer Event to JSON
+
+instance ToJSON BufferEvent where
+    toJSON = object . bufEvtPairs
+
+bufEvtPairs :: BufferEvent -> [Pair]
+bufEvtPairs evt@(ReceivedMessage {}) =
+    [ "event"       .= ("recvmsg" :: T.Text)
+    , "sender"      .= recvMsgSender evt
+    , "message"     .= recvMsgContent evt
+    , "msgtype"     .= recvMsgType evt
+    ]
+bufEvtPairs evt@(UserJoin user) =
+    [ "event" .= ("join" :: T.Text)
+    , "user"  .= user
+    ]
+bufEvtPairs evt@(UserPart user msgM) =
+    [ "event"   .= ("part" :: T.Text)
+    , "user"    .= user
+    ] ++ if isJust msgM
+            then ["message" .= fromJust msgM]
+            else []
+bufEvtPairs evt@(UserQuit user msgM) =
+    [ "event" .= ("quit" :: T.Text)
+    , "user"  .= user
+    ] ++ if isJust msgM
+            then ["message" .= fromJust msgM]
+            else []
+
+-- }}}
+
+-- {{{ JSON to Events
+
+instance FromJSON BufferEvent where
+    parseJSON (Object obj) = do
+        evtType <- obj .: "event"
+        case evtType :: T.Text of
+             "recvmsg" -> ReceivedMessage
+                <$> obj .: "sender"
+                <*> obj .: "message"
+                <*> obj .: "msgtype"
+             "join" -> UserJoin <$> obj .: "user"
+             "part" -> UserPart <$> obj .: "user" <*> obj .: "messsage"
+             "quit" -> UserQuit <$> obj .: "user" <*> obj .: "messsage"
+             _ -> empty
+
+-- }}}
 

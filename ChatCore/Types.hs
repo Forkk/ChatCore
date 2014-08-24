@@ -12,6 +12,8 @@ import {-# SOURCE #-} ChatCore.Protocol
 
 type ChatNetworkId = T.Text
 
+type ChatBufferId = T.Text
+
 -- | Represents a message destination. This can be either a channel or a user.
 type ChatDest = T.Text
 

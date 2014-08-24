@@ -17,6 +17,7 @@ module ChatCore.ChatLog
     ) where
 
 import Control.Applicative
+import Control.Exception
 import Control.Monad
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Resource
@@ -79,7 +80,8 @@ loadChatLog clogDir = do
 writeLogLine :: ChatLog -> LogLine -> IO ()
 writeLogLine log line = do
     ensureExists bufDir
-    BL.appendFile logFile (encode line `BL8.append` "\n")
+    -- TODO: Investigate UTF-8 mangling in here.
+    TL.appendFile logFile (logLineToStr line `TL.append` "\n")
   where
     bufDir = chatLogDir log </> T.unpack (logLineBuffer line)
     logFile = bufDir </> logFileName (logFileForLine line)
@@ -113,15 +115,16 @@ readLog log bufId startTime = do
     -- Reads the given log file.
     doRead file = unsafePerformIO $ do
         putStrLn ("Reading " ++ show file)
-        reverse <$> filter lineBeforeStart <$> readLogFile log bufId file
+        -- TODO: Handle exceptions from readFile
+        lines <- filter lineBeforeStart <$> readLogFile log bufId file
+        seq lines $ return lines
 
 -- | Reads the given log file in the given buffer in the given chat log.
 readLogFile :: ChatLog -> BufferId -> LogFileId -> IO [LogLine]
-readLogFile log bufId fid =
-    map setBufId <$> mapMaybe decode <$> BL8.lines <$> BL.readFile logPath
+readLogFile log buf fid =
+    mapMaybe (parseLogLine buf) <$> reverse <$> B8.lines <$> B.readFile logPath
   where
-    logPath = chatLogDir log </> T.unpack bufId </> logFileName fid
-    setBufId line = line { logLineBuffer = bufId }
+    logPath = chatLogDir log </> T.unpack buf </> logFileName fid
 
 -- }}}
 

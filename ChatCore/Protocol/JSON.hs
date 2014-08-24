@@ -18,6 +18,7 @@ import Data.Either
 import Data.Maybe
 import qualified Data.Conduit.List as CL
 import Data.Aeson
+import Data.Aeson.Types
 import qualified Data.ByteString as B
 import qualified Data.Text as T
 import qualified Data.Text.Lazy as TL
@@ -123,14 +124,10 @@ instance FromJSON ClientCommand where
 -- {{{ JSON Serializing
 
 instance ToJSON CoreEvent where
-    toJSON evt@(ReceivedMessage {}) = object
-        [ "event"       .= ("recvmsg" :: T.Text)
-        , "source"      .= recvMsgNetwork evt
-        , "source"      .= recvMsgSource evt
-        , "sender"      .= recvMsgSender evt
-        , "message"     .= recvMsgContent evt
-        , "msgtype"     .= recvMsgType evt
-        ]
+    toJSON (BufCoreEvent chatNet chatBuf evt) = object $
+        [ "network"     .= chatNet
+        , "buffer"      .= chatBuf
+        ] ++ bufEvtPairs evt
 
 -- }}}
 

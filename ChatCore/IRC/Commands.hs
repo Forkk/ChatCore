@@ -11,6 +11,7 @@ defineIRCCmds
     
     , ("ICmdJoin", "JOIN")
     , ("ICmdPart", "PART")
+    , ("ICmdQuit", "QUIT")
 
     , ("ICmdNick", "NICK")
     , ("ICmdUser", "USER")

@@ -145,6 +145,15 @@ sendCoreEvent :: CoreEvent -> NetCtlActor ()
 sendCoreEvent evt = do
     gets userCtlAddr >>= lift . (flip send $ UserCtlCoreEvent $ evt)
 
+-- | Sends a buffer event for the given buffer.
+bufferEvent :: ChatBufferId -> BufferEvent -> NetCtlActor ()
+bufferEvent bufId evt = do
+    -- Get the network ID.
+    netId <- gets nsId
+    -- Send the event and log it.
+    sendCoreEvent $ BufCoreEvent netId bufId evt
+    logEvent bufId $ LogBufEvent evt
+
 -- | Logs the given event.
 logEvent :: BufferId -> LogEvent -> NetCtlActor ()
 logEvent buf evt = do
@@ -179,25 +188,17 @@ handleLine (IRCLine _ (ICmdPing) _ addr) = do
 
 -- PRIVMSG and NOTICE
 handleLine (IRCLine (Just sender) (ICmdPrivmsg) [source] (Just msg)) = do
-    netid <- gets nsId
-    sendCoreEvent $ ReceivedMessage
-        { recvMsgNetwork = netid
-        , recvMsgSource = source
-        , recvMsgSender = sender
-        , recvMsgContent = msg
-        , recvMsgType = MtPrivmsg
-        }
-    logEvent source $ LogMessage sender msg MtPrivmsg
+    bufferEvent source $ ReceivedMessage sender msg MtPrivmsg
 handleLine (IRCLine (Just sender) (ICmdNotice) [source] (Just msg)) = do
-    netid <- gets nsId
-    sendCoreEvent $ ReceivedMessage
-        { recvMsgNetwork = netid
-        , recvMsgSource = source
-        , recvMsgSender = sender
-        , recvMsgContent = msg
-        , recvMsgType = MtNotice
-        }
-    logEvent source $ LogMessage sender msg MtNotice
+    bufferEvent source $ ReceivedMessage sender msg MtNotice
+
+-- JOIN, PART, and QUIT
+handleLine (IRCLine (Just user) (ICmdJoin) [chan] Nothing) = do
+    bufferEvent chan $ UserJoin user
+handleLine (IRCLine (Just user) (ICmdPart) [chan] msgM) = do
+    bufferEvent chan $ UserPart user msgM
+handleLine (IRCLine (Just user) (ICmdQuit) [chan] msgM) = do
+    bufferEvent chan $ UserQuit user msgM
 
 
 handleLine line =
