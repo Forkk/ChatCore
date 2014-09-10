@@ -202,7 +202,8 @@ handleLine (IRCLine (Just user) (ICmdQuit) [chan] msgM) = do
 
 
 handleLine line =
-    liftIO $ putStrLn ("Got unknown line: " ++ show line)
+    -- liftIO $ putStrLn ("Got unknown line: " ++ show line)
+    return ()
 
 -- }}}
 

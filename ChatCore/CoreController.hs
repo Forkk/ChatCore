@@ -20,6 +20,7 @@ import Network
 
 import ChatCore.Protocol
 import ChatCore.Protocol.JSON
+import ChatCore.Protocol.Quassel
 import ChatCore.Types
 import ChatCore.UserController
 import ChatCore.Util.StateActor
@@ -74,6 +75,7 @@ data CoreTypeDef = forall ct conn. CoreType ct conn => CoreTypeDef ct
 getCoreTypeList :: CoreCtlActor [CoreTypeDef]
 getCoreTypeList = return
     [ CoreTypeDef $ jsonCoreType
+    , CoreTypeDef $ quasselCoreType
     ]
 
 
