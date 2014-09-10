@@ -67,15 +67,15 @@ actor.
 
 This function hides the fact that the connection listener is an actor.
 
-> newConnection :: (CoreProtocol conn) => IO conn -> ConnectionListener ()
-> newConnection connAction = do
+> newConnection :: (CoreProtocol conn) => conn -> ConnectionListener ()
+> newConnection conn = do
 >     addr <- ask
->     lift $ send addr $ CoreNewConnection connAction
+>     lift $ send addr $ CoreNewConnection conn
 
 This event data type is used by the core controller to receive new connections.
 
 > data NewConnEvent where
->     NewConnection :: CoreProtocol conn => IO conn -> NewConnEvent
+>     NewConnection :: CoreProtocol conn => IO (Maybe conn) -> NewConnEvent
 >     deriving (Typeable)
 
 This function is used to start a connection listener.

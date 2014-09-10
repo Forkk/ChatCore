@@ -8,7 +8,11 @@ import Text.Parsec.ByteString
 
 -- | Reads characters into a Text until the given character is read.
 charsUntil :: Char -> Parser T.Text
-charsUntil stop = T.pack <$> segChars
+charsUntil stop = T.pack <$> charsUntilStr stop
+
+-- | Reads characters into a String until the given character is read.
+charsUntilStr :: Char -> Parser String
+charsUntilStr stop = segChars
   where
     segChars = do
         -- Read a character.

@@ -98,7 +98,7 @@ sourceString = do
 
 -- | Parser which parses a command.
 command :: Parser IRCCommand
-command = icmdFromStr <$> segment
+command = icmdFromStr <$> charsUntilStr ' '
 
 -- | Parser which parses a single argument.
 argument :: Parser IRCArgument
@@ -124,7 +124,7 @@ lineToByteString line = BL.toStrict $ TL.encodeUtf8 $ TL.toLazyText $ lineTextBu
 lineTextBuilder :: IRCLine -> TL.Builder
 lineTextBuilder line =
        maybe mempty (\t -> TL.singleton ':' <> textAndSpace t) (ilSourceStr line)
-    <> (TL.fromText $ icmdToStr $ ilCommand line)
+    <> (TL.fromString $ icmdToStr $ ilCommand line)
     <> (mconcat $ map spaceAndText $ ilArgs line)
     <> maybe mempty (\t -> TL.fromText " :" <> TL.fromText t) (ilBody line)
   where

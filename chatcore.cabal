@@ -63,7 +63,6 @@ executable chatcore
     , ChatCore.IRC.Commands
     , ChatCore.IRC.Connection
     , ChatCore.IRC.Line
-    , ChatCore.IRC.TH
 
     -- Controllers
     , ChatCore.CoreController
@@ -87,6 +86,7 @@ executable chatcore
     , ChatCore.Util
     , ChatCore.Util.Error
     , ChatCore.Util.Parsec
+    , ChatCore.Util.KeyedEnum
     , ChatCore.Util.StateActor
 
   default-extensions:
@@ -99,10 +99,14 @@ executable chatcore
     , QuasiQuotes
     , TypeFamilies
     , FlexibleContexts
+    , FlexibleInstances
+    , OverlappingInstances
+    , MultiParamTypeClasses
 
   -- Other library packages from which modules are imported.
   build-depends:
       base                          >=4.7   && <4.8
+    , safe                          >=0.3   && <0.4
     , text                          >=1.1   && <1.2
     , text-format                   >=0.3   && <0.4
     , bytestring                    >=0.10  && <0.11

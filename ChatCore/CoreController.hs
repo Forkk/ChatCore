@@ -28,7 +28,7 @@ import ChatCore.Util.StateActor
 -- {{{ External interface
 
 data CoreActorMsg
-    = forall conn. CoreProtocol conn => CoreNewConnection (IO conn)
+    = forall conn. CoreProtocol conn => CoreNewConnection conn
 
 instance ActorMessage CoreActorMsg
 
@@ -125,7 +125,7 @@ coreController :: CoreCtlActor ()
 coreController = do
     msg <- lift receive
     case msg of
-         CoreNewConnection connAction -> handleNewConnection connAction
+         CoreNewConnection conn -> handleNewConnection conn
     coreController
 
 
@@ -137,16 +137,15 @@ data CoreCtlCommand = CCmdPlaceholder
     deriving (Typeable)
 
 -- | Handles connection listener events.
-handleNewConnection :: CoreProtocol conn => IO conn -> CoreCtlActor ()
-handleNewConnection connAction = do
-    -- Run the connection action.
-    conn <- ClientConnection <$> liftIO connAction
-    -- TODO: Find the correct user controller to send this to.
+handleNewConnection :: CoreProtocol conn => conn -> CoreCtlActor ()
+handleNewConnection conn = do
+    -- TODO: Find the correct user controller to attach to.
     -- For now, we'll just attach it to all of them.
     -- Get a list of the user controllers.
     userCtls <- M.elems <$> gets ccUserCtls
     -- Send the message.
-    forM_ userCtls $ sendUserCtl $ UserCtlNewConnection conn
+    forM_ userCtls $
+        sendUserCtl $ UserCtlNewConnection $ ClientConnection conn
 
 
 -- }}}

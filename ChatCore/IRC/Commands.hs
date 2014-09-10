@@ -3,10 +3,10 @@
 module ChatCore.IRC.Commands where
 
 import Data.Text
-import ChatCore.IRC.TH
+import ChatCore.Util.KeyedEnum
 
-defineIRCCmds
-    [ ("ICmdPrivmsg", "PRIVMSG")
+mkKeyedEnum "IRCCommand" "icmdFromStr" "icmdToStr" (Just "ICmdOther")
+    [ ("ICmdPrivmsg", "PRIVMSG" :: String)
     , ("ICmdNotice",  "NOTICE")
     
     , ("ICmdJoin", "JOIN")
