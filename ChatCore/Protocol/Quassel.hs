@@ -1,7 +1,5 @@
 module ChatCore.Protocol.Quassel
-    ( QuasselCoreType
-    , quasselCoreType
-    , QuasselConn
+    ( quasselConnListener
     ) where
 
 import Control.Applicative
@@ -10,6 +8,7 @@ import Control.Exception
 import Control.Monad
 import Control.Monad.Trans
 import Control.Monad.Trans.Resource
+import Control.Monad.Trans.State as St
 import Data.Binary
 import Data.Binary.Get
 import Data.Binary.Put
@@ -40,114 +39,86 @@ import ChatCore.Protocol.Quassel.Types
 import ChatCore.Protocol.Quassel.QVariant
 import ChatCore.Types
 
-
-quasselCoreType :: QuasselCoreType
-quasselCoreType = QuasselCoreType { quasselCorePort = PortNumber 4242 }
-
--- | Data structure for the Quassel core type.
-data QuasselCoreType = QuasselCoreType
-    { quasselCorePort :: PortID -- The port to listen on.
-    } deriving (Typeable)
-
-instance CoreType QuasselCoreType QuasselConn where
-    coreTypeName _ = "Quassel Emulation"
-    coreTypeDesc _ = "A core protocol type that emulates a Quassel Core."
-    connectionListener coreType = do
-        liftIO $ putStrLn "Quassel core type is listening."
-        -- Wait for a connection.
-        sock <- liftIO $ listenOn (quasselCorePort coreType)
-        -- Accept connections.
-        forever $ acceptConnection sock
-
--- | Accepts a new connection on the given socket.
-acceptConnection :: Socket -> ConnectionListener ()
-acceptConnection sock = do
-    (handle, host, port) <- liftIO $ accept sock
-    liftIO $ putStrLn "Got Quassel connection."
-    let printErr :: SomeException -> IO (Maybe QuasselConn)
-        printErr e = print e >> return Nothing
-    connM <- liftIO $ catch (Just <$> initConn host port handle) printErr
-    if isJust connM
-       then newConnection $ fromJust connM
-       else return ()
-
-
--- | Data structure representing a Quassel Core connection.
-data QuasselConn = QuasselConn
-    { qcHandle      :: Handle       -- | IO handle for reading and writing.
-    , qcSource      :: NetworkSrc   -- | Resumable source to read from.
-    , qcRemoteHost  :: HostName     -- | The client's hostname.
-    , qcPortNumber  :: PortNumber   -- | The port number.
-    } deriving (Typeable)
-
--- | Data structure with client information.
-data ClientInfo = ClientInfo
-    { ciDate    :: UTCTime
-    , ciUseSSL  :: Bool
-    , ciVersion :: T.Text
-    , ciCmpress :: Bool
+-- | Creates a connection listener listening on the given port.
+quasselConnListener :: PortID -> ConnListener
+quasselConnListener port = ConnListener
+    { listenerFunc = listenFunc port
+    , clName = "Quassel Core Protocol"
+    , clId = "quassel"
     }
 
-instance CoreProtocol QuasselConn where
-    eventListener conn = do
-        return ()
 
-    sendEvent conn msg = do
-        return ()
+-- | Client listener function.
+listenFunc :: PortID -> Source IO PendingConn
+listenFunc port = do
+    -- Wait for a connection.
+    sock <- liftIO $ listenOn port
+    -- Accept connections.
+    forever $ acceptConnection sock
+
+-- | Accepts a new connection on the given socket.
+acceptConnection :: Socket -> Source IO PendingConn
+acceptConnection sock = do
+    liftIO $ putStrLn "Quassel connection listener is awaiting a connection."
+    -- Accept the sock.
+    (handle, host, port) <- liftIO $ accept sock
+    -- Create a pending connection from the handle.
+    yield $ pendingConn handle
 
 
-initConn :: HostName -> PortNumber -> Handle -> IO QuasselConn
-initConn host port handle = (flip onException) (hClose handle) $ do
-    (src, features) <- liftIO (sourceHandle handle $$+ sinkConnFeatures)
-    -- Select a protocol. We'll use the first one we support.
+-- | Handles authentication an initialization.
+pendingConn :: Handle -> PendingConn
+pendingConn handle coreCtl = do
+    liftIO $ putStrLn "Quassel connection pending. Checking features."
     -- TODO: Support other protocols.
+    -- Select a protocol. We'll use the first one we support.
+    (ns, features) <- liftIO (sourceHandle handle $$+ sinkConnFeatures)
     let protocol = headNote "No supported protocol." $
                        filter ((==DataStreamProtocol) . pclType) $
                            cfProtocols features
     -- Tell the client which protocol we've chosen.
     BL.hPut handle $ runPut $ putProtocol protocol
-    -- Do the secret handshake.
-    doHandshake host port handle src
-    -- Create a connection object.
-    let conn = QuasselConn {
-          qcHandle = handle
-        , qcSource = src
-        , qcRemoteHost = host
-        , qcPortNumber = port
-        }
-    -- We're done.
-    return conn
+    liftIO $ putStrLn "Quassel connection handshake."
+    (info, ns') <- doHandshake handle ns
+    liftIO $ putStrLn "Quassel connection initiated."
+    return (hiUser info, connection handle ns)
+
+
+-- {{{ Handshake Phase
+
+-- | Data structure containing information gathered during the handshake
+-- process.
+data HandshakeInfo = HandshakeInfo
+    { hiUser :: UserId
+    , hiPass :: UserPassword
+    }
 
 -- | Handles handshake messages from the client until it is time to switch to
 -- the signal proxy system.
-doHandshake :: HostName -> PortNumber -> Handle -> NetworkSrc -> IO QuasselConn
-doHandshake host port handle netSrc = do
-    (netSrc', msg) <- readHandshakeMsg netSrc
-    handleHandshakeMsg handle msg
-    doHandshake host port handle netSrc'
+doHandshake :: Handle -> NetworkSrc -> IO (HandshakeInfo, NetworkSrc)
+doHandshake handle netSrc = (flip runStateT $ netSrc) $ do
+    -- The client should send this message first. If not, crash the connection.
+    (RegisterClientMsg vsn bdate) <- readHandshakeMsg
+    -- Send a client registered message back.
+    liftIO $ sendHandshakeMsg handle $ ClientRegisteredMsg 0x00000000 -- No extra features yet.
+    -- Wait for a login message.
+    (LoginMsg user pass) <- readHandshakeMsg
+    -- Return the handshake info.
+    return $ HandshakeInfo user pass
 
-handleHandshakeMsg :: Handle -> HandshakeMsg -> IO ()
-handleHandshakeMsg handle (RegisterClientMsg vsn bdate) = do
-    -- TODO
-    sendHandshakeMsg handle $ ClientRegisteredMsg 0x00000000
-handleHandshakeMsg handle (LoginMsg user passwd) = do
-    putStrLn ("Login from " ++ T.unpack user)
-    sendHandshakeMsg handle $ LoginSuccessMsg
-handleHandshakeMsg handle msg = do
-    putStrLn ("Unhandled handshake message: " ++ show msg)
-
+-- }}}
 
 -- {{{ Read / Write Messages
-
-readHandshakeMsg :: NetworkSrc -> IO (NetworkSrc, HandshakeMsg)
-readHandshakeMsg netSrc = do
-    (netSrc', msgData) <- readMsgBytes netSrc
-    let msg = runGet getHandshakeMsg $ BL.fromChunks [msgData]
-    return (netSrc', msg)
 
 readMsgBytes :: NetworkSrc -> IO (NetworkSrc, B.ByteString)
 readMsgBytes netSrc = netSrc $$++ sinkGet getMessageBytes
 
+readHandshakeMsg :: StateT NetworkSrc IO HandshakeMsg
+readHandshakeMsg = do
+    netSrc <- St.get
+    (netSrc', msgData) <- liftIO $ readMsgBytes netSrc
+    St.put netSrc'
+    return $ runGet getHandshakeMsg $ BL.fromChunks [msgData]
 
 sendHandshakeMsg :: Handle -> HandshakeMsg -> IO ()
 sendHandshakeMsg handle msg = do
@@ -156,6 +127,24 @@ sendHandshakeMsg handle msg = do
     BL.hPut handle $ runPut $ putWord32be $ fromIntegral $ BL.length msgData
     -- Write the message.
     BL.hPut handle $ msgData
+
+readSigProxyMsg :: StateT NetworkSrc IO SignalProxyMsg
+readSigProxyMsg = do
+    netSrc <- St.get
+    (netSrc', msgData) <- liftIO $ readMsgBytes netSrc
+    St.put netSrc'
+    return $ runGet getSigProxyMsg $ BL.fromChunks [msgData]
+
+sendSigProxyMsg :: Handle -> SignalProxyMsg -> IO ()
+sendSigProxyMsg handle msg = do
+    return ()
+    {-
+    let msgData = runPut $ putSigProxyMsg msg
+    -- Write the message size.
+    BL.hPut handle $ runPut $ putWord32be $ fromIntegral $ BL.length msgData
+    -- Write the message.
+    BL.hPut handle $ msgData
+    -}
 
 -- }}}
 
@@ -281,4 +270,36 @@ putProtocol _ = do
     fail "Unimplemented protocol."
 
 -- }}}
+
+-- {{{ Connection Function
+
+-- | The `RemoteClient` function.
+connection :: Handle -> NetworkSrc -> RemoteClient ()
+connection handle ns = do
+    -- TODO: At the beginning of the connection, send the session state and
+    -- switch to signal proxy mode.
+    liftIO $ putStrLn "Quassel connection started."
+    val <- coreEvtOr $ runStateT readSigProxyMsg ns
+    case val of
+         Left ce -> do
+             handleCoreEvt handle ce
+             connection handle ns
+         Right (msg, ns') -> do
+             handleClientMsg msg
+             connection handle ns'
+
+-- }}}
+
+-- | Handles a message from the client.
+handleClientMsg :: SignalProxyMsg -> RemoteClient ()
+handleClientMsg msg = do
+    liftIO $ putStrLn "Got quassel message."
+    liftIO $ print msg
+    return ()
+
+-- | Handles a core event.
+handleCoreEvt :: Handle -> CoreEvent -> RemoteClient ()
+handleCoreEvt handle evt = do
+    return ()
+    -- liftIO $ TL.hPutStrLn handle $ TL.decodeUtf8 $ encode evt
 

@@ -17,7 +17,8 @@ type ChatBufferId = T.Text
 -- | Represents a message destination. This can be either a channel or a user.
 type ChatDest = T.Text
 
--- | Represents a message source. This works similarly to Destination. It can be either a channel or a user.
+-- | Represents a message source. This works similarly to Destination. It can
+-- be either a channel or a user.
 type ChatSource = T.Text
 
 -- | Type representing a user's nick.
@@ -32,6 +33,10 @@ type ChatChan = T.Text
 
 -- | A string identifying a user.
 type UserId = T.Text
+
+-- | A string with a user's password. It's probably best not to keep these
+-- hanging around.
+type UserPassword = T.Text
 
 
 -- | Identifies the type of a message (i.e. PRIVMSG, NOTICE, etc.)

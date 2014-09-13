@@ -94,6 +94,7 @@ data SignalProxyMsg
         }
     | HeartBeatMsg UTCTime
     | HeartBeatReplyMsg UTCTime
+    deriving (Show, Eq)
 
 -- }}}
 

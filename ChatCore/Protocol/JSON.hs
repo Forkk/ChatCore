@@ -54,29 +54,29 @@ acceptConnection sock = do
     -- Accept the sock.
     (handle, host, port) <- liftIO $ accept sock
     -- Create a pending connection from the handle.
-    yield $ pendingConn handle host port
+    yield $ pendingConn handle
 
 
 -- | Handles authentication an initialization for the JSON protocol.
-pendingConn :: Handle -> HostName -> PortNumber -> PendingConn
-pendingConn handle host port coreCtl = do
+pendingConn :: Handle -> PendingConn
+pendingConn handle coreCtl = do
     liftIO $ putStrLn "JSON connection pending..."
     -- TODO: Implement authentication for the JSON protocol.
-    return ("Forkk", connection handle host port)
+    return ("Forkk", connection handle)
 
 
 -- {{{ Connection Function
 
 -- | The `RemoteClient` function.
-connection :: Handle -> HostName -> PortNumber -> RemoteClient ()
-connection handle host port = do
+connection :: Handle -> RemoteClient ()
+connection handle = do
     liftIO $ putStrLn "JSON connection started."
     val <- coreEvtOr $ B.hGetLine handle
     case val of
          Left ce -> handleCoreEvt handle ce
          Right msgData ->
              maybe (return ()) handleClientMsg =<< parseClientMsgM msgData
-    connection handle host port
+    connection handle
   where
     -- Handle core events or client commands.
     evtHandler (Left evt) = handleCoreEvt handle evt
