@@ -2,10 +2,10 @@ module ChatCore.CoreController where
 
 import Control.Concurrent.Actor
 
+import ChatCore.Types
 import {-# SOURCE #-} ChatCore.Protocol
 
-data CoreActorMsg
-    = forall conn. CoreProtocol conn => CoreNewConnection conn
+data CoreActorMsg = CoreNewConnection (CoreCtlHandle -> IO (UserId, RemoteClient ()))
 
 instance ActorMessage CoreActorMsg
 

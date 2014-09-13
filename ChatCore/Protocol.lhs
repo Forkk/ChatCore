@@ -6,147 +6,189 @@ multi-protocol system works.
 
 First, the module definition and imports.
 
-> {-# LANGUAGE RankNTypes, MultiParamTypeClasses, FunctionalDependencies #-}
-> module ChatCore.Protocol where
-> 
-> import Control.Concurrent.Actor
-> import Control.Monad.Trans
-> import Control.Monad.Trans.Reader
-> import Data.Conduit
-> import qualified Data.Text as T
-> import Data.Typeable
-> 
-> import ChatCore.Events
-> import ChatCore.Types
-> import {-# SOURCE #-} ChatCore.CoreController
+\begin{code}
+
+{-# LANGUAGE RankNTypes, MultiParamTypeClasses, FunctionalDependencies #-}
+module ChatCore.Protocol
+    (
+    -- * Connection Listener
+      ConnListener (..)
+    -- * Pending Connection
+    , PendingConn (..)
+    -- * Remote Client
+    , RemoteClient
+    , RemoteClientMsg (..)
+    , RemoteClientHandle
+    , execRemoteClient
+    , receivedClientCmd
+    , nextCoreEvent
+    , coreEventSrc
+    , coreEvtOr
+    -- * Communicating With Clients
+    , rcSendCoreEvt
+    ) where
+
+import Control.Applicative
+import Control.Concurrent.Actor
+import Control.Concurrent.Async
+import Control.Concurrent.STM
+import Control.Concurrent.STM.TBMChan
+import Control.Monad
+import Control.Monad.Base
+import Control.Monad.Trans
+import Control.Monad.Trans.Control
+import Control.Monad.Trans.Reader
+import Control.Monad.Trans.Resource
+import Data.Conduit
+import Data.Conduit.TMChan
+import qualified Data.Conduit.List as CL
+import qualified Data.Text as T
+import Data.Typeable
+
+import ChatCore.Events
+import ChatCore.Types
+import {-# SOURCE #-} ChatCore.CoreController
+import {-# SOURCE #-} ChatCore.UserController
+
+\end{code}
 
 
-The Typeclasses
-===============
-
-The protocol system consists of two type classes, the `CoreType` class, and the
-`CoreProtocol` typeclass. The purpose of these classes is to provide a
-translation layer between Chat Core's own "internal protocol" of function calls
-and the protocols of the outside world (e.g. IRC, QuasselCore, etc).
-    
-The `CoreType` typeclass represents a specific type of IRC core protocol. It
-contains some information about the protocol (such as its name) and a function
-which listens for connections.
-
-The `CoreProtocol` typeclass implements a connection for a specific protocol.
-All `CoreProtocol` instances are created and initialized by a `CoreType`'s
-connection source. Any given `CoreType` will only create one specific
-`CoreProtocol` type.
-
-
-The `CoreType` Class
+Protocol Definitions
 ====================
 
-The `CoreType` typeclass holds information about a specific type of IRC core
-protocol. This includes information such as the protocol/bouncer's name. The
-`CoreType` class also contains a function which should handle listening for new
-connections.
+When implementing a protocol, the first thing to do is write some code to
+listen for connections. For this, Chat Core provides connection listeners.
 
-Each `CoreType` instance contains a `connectionListener` function which is
-responsible for listening for new connections. This function will be run on a
-separate thread, and it should block until a new connection is made. Once the
-connection is made, it should immediately call the `newConnection` function,
-passing in a function to initialize the connection. Initialization should not
-be done in the listener function's thread, as initialization may require doing
-things that aren't thread-safe.
+A connection listener is an object of the `ConnListener` type. It is a simple
+data structure containing a function which will listen for clients connecting
+with a certain protocol.
 
-The connection source is secretly an actor with access to the core controller.
-Calling `newConnection` sends a `NewConnection` event to the core controller
-actor.
+\begin{code}
 
-> class (Typeable ctype, CoreProtocol conn) => CoreType ctype conn |
->       ctype -> conn, conn -> ctype where
->     coreTypeName :: ctype -> T.Text
->     coreTypeDesc :: ctype -> T.Text
->     connectionListener :: ctype -> ConnectionListener ()
+data ConnListener = ConnListener
+    { listenerFunc :: Source IO PendingConn -- | The function to listen for events.
+    , clName :: T.Text -- | A human readable name for the listener.
+    , clId :: T.Text -- | An ID string for the listener.
+    }
 
-This function hides the fact that the connection listener is an actor.
-
-> newConnection :: (CoreProtocol conn) => conn -> ConnectionListener ()
-> newConnection conn = do
->     addr <- ask
->     lift $ send addr $ CoreNewConnection conn
-
-This event data type is used by the core controller to receive new connections.
-
-> data NewConnEvent where
->     NewConnection :: CoreProtocol conn => IO (Maybe conn) -> NewConnEvent
->     deriving (Typeable)
-
-This function is used to start a connection listener.
-
-> -- The connection listener does not accept any messages.
-> data ConnListenerMsg = ClMsg
-> instance ActorMessage ConnListenerMsg
-> type ConnListenerHandle = ActorHandle ConnListenerMsg
->
-> type ConnectionListener = ReaderT CoreCtlHandle (ActorM ConnListenerMsg)
-> 
-> runConnListener :: CoreType ct conn =>
->                    CoreCtlHandle -> ct -> ActorM ConnListenerMsg ()
-> runConnListener coreCtl ct =
->     runReaderT (connectionListener ct) coreCtl
+\end{code}
 
 
-The `CoreProtocol` Class
-========================
+Pending Connections
+===================
 
-The `CoreProtocol` class is where the meat of the protocol implementation lies.
-It is responsible for handling all of the translation back and forth between
-Chat Core's internal systems and the protocols of the outside world.
+When a client initiates a connection, there is an intermediate state between
+the time when the client initially connects, and the time when the client
+authenticates with the core and is assigned to a user controller. Connections
+in this intermediate phase are called pending connections and they are simply
+implemented as IO actions which take a core controller handle and return a
+tuple containing the connection's user ID and a `RemoteClient` action which
+will run the connection.
 
-To do this, the `CoreProtocol` class provides an array of functions which
-provide IO actions to send certain messages to the client; as well as a
-function to provide a source of messages from the client.
+The core controller handle that is passed to the pending connection object can
+be used to communicate with the core controller to do things such as user
+authentication.
 
-Listening for Messages
-----------------------
+\begin{code}
 
-One of the goals of the `CoreProtocol` is to receive data from clients and
-translate that into an event that Chat Core can understand. For example, in the
-IRC core protocol, a "PRIVMSG" message from a client should be translated into
-a `sendMessage` Chat Core event.
+type PendingConn = CoreCtlHandle -> IO (UserId, RemoteClient ())
 
-This is accomplished by the `eventListener` function, which is a function that
-should listen for messages, translate them into a Chat Core event, and pass
-them to the `handleEvent` function.
-
-The return type of the `eventListener` function is an `EventSource`. This is an
-opaque monadic type which handles the dirty business of getting those Chat Core
-events where they need to go to be processed. Internally, it is implemented as
-a conduit `Source`, which provides a source of Chat Core client events.
-
-> type EventSource = Source IO ClientCommand
+\end{code}
 
 
-Sending Messages to the Client
-------------------------------
+Remote Clients
+==============
 
-The other task that the `CoreProtocol` must handle is translating events from
-Chat Core into messages that the client can understand. Doing this is fairly
-simple, the typeclass must implement a function which translates Chat Core's
-core events into messages that the client can understand.
+A core component of the protocol system is the client connection object. The
+client connection object represents a client that has connected to the server
+and authenticated as a user.
+
+The interface between the core systems and the client connection object
+consists of a single function which takes a user controller's handle as an
+argument and returns a `RemoteClient` monad that executes the client.
+
+\begin{code}
+
+-- TODO: Find a way to communicate with the user controller without breaking
+-- abstraction.
+
+data RemoteClientMsg = RCCoreEventMsg CoreEvent
+instance ActorMessage RemoteClientMsg
+
+newtype RemoteClient a =
+    RC { unRC :: (ReaderT (ActorHandle UserCtlActorMsg) (ActorM RemoteClientMsg) a) }
+    deriving (Monad, MonadIO, MonadThrow, Applicative, Functor)
+
+type RemoteClientHandle = ActorHandle RemoteClientMsg
+
+fromRCMsg :: RemoteClientMsg -> CoreEvent
+fromRCMsg (RCCoreEventMsg evt) = evt
 
 
-> class Typeable conn => CoreProtocol conn where
->     -- | Reads messages from the client and provides a source of
->     -- `ClientCommand`s.
->     eventListener   :: conn -> EventSource
->     -- | Takes a `CoreEvent` and sends the appropriate message to the client.
->     sendEvent       :: conn -> CoreEvent -> IO ()
+rcSendCoreEvt :: RemoteClientHandle -> CoreEvent -> IO ()
+rcSendCoreEvt rc = sendIO rc . RCCoreEventMsg
 
 
-A Wrapper Type
---------------
+instance MonadBase IO RemoteClient where
+    liftBase = RC . liftBase
 
-In order to keep all of a user's connections in a list, they must all be
-wrapped in a single data type.
+instance MonadBaseControl IO RemoteClient where
+    newtype StM RemoteClient a =
+        StMRC { unStMRC :: StM (ReaderT UserCtlHandle (ActorM RemoteClientMsg)) a }
+    liftBaseWith f =
+        RC . liftBaseWith $ \runInBase -> f $ liftM StMRC . runInBase . unRC
+    restoreM = RC . restoreM . unStMRC
 
-> data ClientConnection where
->     ClientConnection :: CoreProtocol conn => conn -> ClientConnection
+
+-- | Executes the given `RemoteClient` monad as an actor with the given user
+-- control handle.
+execRemoteClient :: UserCtlHandle -> RemoteClient a -> ActorM RemoteClientMsg a
+execRemoteClient ucHandle (RC actorM) =
+    runReaderT actorM ucHandle
+
+-- | Sends the given `ClientCommand` to the user controller.
+receivedClientCmd :: ClientCommand -> RemoteClient ()
+receivedClientCmd cmd = RC $ do
+    usrCtl <- ask
+    lift $ ucSendClientCmd usrCtl cmd
+
+-- | Waits for the next core event.
+nextCoreEvent :: RemoteClient CoreEvent
+nextCoreEvent = RC $ (fromRCMsg <$> lift receive)
+
+-- | Conduit source for core events.
+coreEventSrc :: Source RemoteClient CoreEvent
+coreEventSrc = (yield =<< lift nextCoreEvent) >> coreEventSrc
+
+\end{code}
+
+Remote client controllers should call the `nextCoreEvent` function to get
+events. This function will block, so it is advisable to use the async library
+to wait on the `nextCoreEvent` function and the IO handle at the same time.
+Alternatively, use the utility functions described below.
+
+
+Most remote client protocol implementations will probably follow quite similar
+patterns. For example, wait for IO on a handle or a core event and then do some
+monadic action. Some useful utility functions are provided to facilitate that.
+
+\begin{code}
+
+-- | Wait for the given IO action or a core event.
+-- FIXME: There is a possible race condition here where the IO action might
+-- be cancelled in the middle of an operation that cannot be rolled back if
+-- a core event occurs right before the IO action finishes.
+coreEvtOr :: IO a -> RemoteClient (Either CoreEvent a)
+coreEvtOr func = runResourceT $ do
+    -- Run the given IO action on an async thread.
+    (_, funcA) <- allocate (async func) cancel
+    -- Get an STM action to receive messages.
+    stmRcv <- lift $ RC $ lift $ receiveSTM
+    -- Wait on the IO action to complete or a core event to be received.
+    liftIO $ atomically $
+        (Right <$> waitSTM funcA)
+         `orElse`
+        (Left  <$> fromRCMsg <$> stmRcv)
+
+\end{code}
 
