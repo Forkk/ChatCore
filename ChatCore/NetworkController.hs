@@ -141,9 +141,9 @@ ncIRC :: IRC a -> NetCtlActor a
 ncIRC action = gets ircConnection >>= (lift . lift . evalIRCAction action)
 
 -- | Sends the given core event to the user controller.
-sendCoreEvent :: CoreEvent -> NetCtlActor ()
-sendCoreEvent evt = do
-    gets userCtlAddr >>= lift . (flip send $ UserCtlCoreEvent $ evt)
+ncSendCoreEvent :: CoreEvent -> NetCtlActor ()
+ncSendCoreEvent evt = do
+    gets userCtlAddr >>= lift . (flip ucSendCoreEvt $ evt)
 
 -- | Sends a buffer event for the given buffer.
 bufferEvent :: ChatBufferId -> BufferEvent -> NetCtlActor ()
@@ -151,7 +151,7 @@ bufferEvent bufId evt = do
     -- Get the network ID.
     netId <- gets nsId
     -- Send the event and log it.
-    sendCoreEvent $ BufCoreEvent netId bufId evt
+    ncSendCoreEvent $ BufCoreEvent netId bufId evt
     logEvent bufId $ LogBufEvent evt
 
 -- | Logs the given event.

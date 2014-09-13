@@ -5,6 +5,10 @@ module ChatCore.UserController
     ( UserCtlHandle
     , UserCtlActorMsg (..)
     , startUserCtl
+    -- * Send Messages
+    , ucSendClientCmd
+    , ucSendCoreEvt
+    , ucSendNewClient
     ) where
 
 import Control.Applicative
@@ -29,6 +33,8 @@ import ChatCore.Util.StateActor
 import {-# SOURCE #-} ChatCore.CoreController
 import ChatCore.NetworkController
 
+import ChatCore.Protocol
+
 -- {{{ External Interface
 
 -- data UserCtlHandle = UserCtlHandle
@@ -38,12 +44,10 @@ import ChatCore.NetworkController
 
 -- userCtlId = ucId
 
--- NOTE: If you change this, be sure to update the hs-boot file too.
 data UserCtlActorMsg
     = UserCtlCoreEvent CoreEvent
     | UserCtlClientCommand ClientCommand
-    | UserCtlNewConnection ClientConnection
-
+    | UserCtlNewClient (RemoteClient ())
 instance ActorMessage UserCtlActorMsg
 
 type UserCtlHandle = ActorHandle UserCtlActorMsg
@@ -56,17 +60,26 @@ startUserCtl usrId coreHandle = do
     hand <- spawnStateActor initUserCtlActor $ def { usUserId = usrId }
     return hand -- UserCtlHandle usrId addr
 
+
+-- | Sends the given client command to the given user controller.
+ucSendClientCmd :: ActorMessage m => UserCtlHandle -> ClientCommand -> ActorM m ()
+ucSendClientCmd uctl cmd = send uctl $ UserCtlClientCommand cmd
+
+-- | Sends the given core event to the given user controller.
+ucSendCoreEvt :: ActorMessage m => UserCtlHandle -> CoreEvent -> ActorM m ()
+ucSendCoreEvt uctl evt = send uctl $ UserCtlCoreEvent evt
+
+-- | Sends the given new client to the given user controller.
+ucSendNewClient :: ActorMessage m => UserCtlHandle -> RemoteClient () -> ActorM m ()
+ucSendNewClient uctl rc = send uctl $ UserCtlNewClient rc
+
 -- }}}
 
 -- {{{ State and types
 
--- Event for adding a new connection.
-data AddConnEvent = AddConn ClientConnection deriving (Typeable)
-
-
 data UserCtlState = UserCtlState
     { usNetCtls     :: M.Map ChatNetworkId NetCtlHandle -- Network controller handles for the user's networks.
-    , usClients     :: [ClientConnection] -- The clients connected as this user.
+    , usClients     :: [RemoteClientHandle] -- The clients connected to this user.
     , usUserId      :: UserId
     }
 
@@ -142,20 +155,9 @@ userController = do
     case msg of
          UserCtlClientCommand ccmd -> handleClientCommand ccmd
          UserCtlCoreEvent evt -> handleCoreEvent evt
-         UserCtlNewConnection conn -> handleNewConnection conn
+         UserCtlNewClient rc -> handleNewClient rc
     userController
 
-
--- }}}
-
--- {{{ Client listener actor
-
-clientCmdListener :: UserCtlHandle -> EventSource -> ActorM () ()
-clientCmdListener userCtl src = tsrc $$ awaitForever $ \cmd ->
-    -- Read from the event source and forward messages to the user controller.
-    lift (send userCtl $ UserCtlClientCommand cmd)
-  where
-    tsrc = transPipe liftIO src
 
 -- }}}
 
@@ -173,18 +175,18 @@ handleClientCommand msg@(PartChannel netId _ _)   = forwardClientCmd netId msg
 -- | Handles core events from the network controller.
 handleCoreEvent :: CoreEvent -> UserCtlActor ()
 handleCoreEvent msg = do
-    gets usClients >>= (mapM_ $ \(ClientConnection conn) -> liftIO $ sendEvent conn msg)
+    gets usClients >>= (mapM_ $ \rc -> liftIO $ rcSendCoreEvt rc msg)
 
 
--- | Handles connection listener events.
-handleNewConnection :: ClientConnection -> UserCtlActor ()
-handleNewConnection cc@(ClientConnection conn) = do
+-- | Handles a new client connection.
+handleNewClient :: RemoteClient () -> UserCtlActor ()
+handleNewClient rc = do
     me <- lift self
-    -- Start a client listener for the connection.
-    clhandle <- liftIO $ spawnActor $ clientCmdListener me $ eventListener conn
-    -- Add the connection to our connection list.
-    modify $ \s -> do
-        s { usClients = cc : usClients s }
+    let clientActor = execRemoteClient me rc
+    -- Start an actor for the client.
+    rcHandle <- liftIO $ spawnActor clientActor
+    -- Add the client's handle to our client list.
+    modify $ \s -> s { usClients = rcHandle : usClients s }
 
 -- }}}
 

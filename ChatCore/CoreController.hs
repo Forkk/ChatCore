@@ -8,9 +8,13 @@ module ChatCore.CoreController
 
 import Control.Applicative
 import Control.Concurrent.Actor
+import Control.Concurrent.Async
+import Control.Concurrent.STM
 import Control.Monad
 import Control.Monad.Trans
 import Control.Monad.Trans.State
+import Data.Conduit
+import qualified Data.Conduit.List as CL
 import Data.Default
 import qualified Data.Map as M
 import qualified Data.Set as S
@@ -28,7 +32,7 @@ import ChatCore.Util.StateActor
 -- {{{ External interface
 
 data CoreActorMsg
-    = forall conn. CoreProtocol conn => CoreNewConnection conn
+    = CoreNewConnection PendingConn
 
 instance ActorMessage CoreActorMsg
 
@@ -46,12 +50,14 @@ runCoreCtl = runActor $ runStateActor initCoreCtlActor $ def
 data CoreCtlState = CoreCtlState
     { ccUserCtls :: M.Map UserId UserCtlHandle -- User controller handles.
     , ccConnListeners :: [ConnListenerHandle]
+    , ccPendingConns :: [Async (UserId, RemoteClient ())]
     }
 
 instance Default CoreCtlState where
     def = CoreCtlState
         { ccUserCtls = M.empty
         , ccConnListeners = []
+        , ccPendingConns = []
         }
 
 -- | State monad for the core controller actor.
@@ -68,12 +74,9 @@ getUserList :: CoreCtlActor [UserId]
 getUserList = return [ "Forkk" ]
 
 
--- Wrapper type so we can store a list of CoreType objects.
-data CoreTypeDef = forall ct conn. CoreType ct conn => CoreTypeDef ct
-
-getCoreTypeList :: CoreCtlActor [CoreTypeDef]
-getCoreTypeList = return
-    [ CoreTypeDef $ jsonCoreType
+getConnListeners :: CoreCtlActor [ConnListener]
+getConnListeners = return
+    [ jsonConnListener $ PortNumber 1337
     ]
 
 
@@ -88,9 +91,9 @@ addUserController userId = do
         s { ccUserCtls = M.insert userId hand $ ccUserCtls s }
 
 
--- | Starts a connection listener for the given core type.
-addConnListener :: CoreType ct conn => ct -> CoreCtlActor ()
-addConnListener ct = do
+-- | Starts the given connection listener.
+startConnListener :: ConnListener -> CoreCtlActor ()
+startConnListener ct = do
     me <- lift self
     hand <- liftIO $ spawnConnListener me ct
     -- lift $ linkActorHandle hand
@@ -98,12 +101,18 @@ addConnListener ct = do
         s { ccConnListeners = hand : ccConnListeners s }
 
 
+type ConnListenerHandle = ActorHandle ()
+
 -- | Starts a connection listener for the given core type and returns a handle.
-spawnConnListener :: CoreType ct conn =>
-                     CoreCtlHandle ->ct -> IO (ConnListenerHandle)
-spawnConnListener coreCtl ct = do
-    hand <- spawnActor $ runConnListener coreCtl ct
+spawnConnListener :: CoreCtlHandle -> ConnListener -> IO (ConnListenerHandle)
+spawnConnListener coreCtl cl = do
+    hand <- spawnActor $ runConnListener coreCtl cl
     return hand
+
+-- | Actor which runs a connection listener.
+runConnListener :: CoreCtlHandle -> ConnListener -> ActorM () ()
+runConnListener coreCtl cl =
+    lift (listenerFunc cl $$ CL.mapM_ (sendIO coreCtl . CoreNewConnection))
 
 -- }}}
 
@@ -116,17 +125,27 @@ initCoreCtlActor = do
     -- Start user controllers.
     getUserList >>= mapM_ addUserController
     -- Start connection listeners.
-    getCoreTypeList >>= mapM_ (\(CoreTypeDef ct) -> addConnListener ct)
+    getConnListeners >>= mapM_ startConnListener
     -- Proceed on to the main loop.
     coreController
 
 -- | The core controller actor's main function.
 coreController :: CoreCtlActor ()
 coreController = do
-    msg <- lift receive
-    case msg of
-         CoreNewConnection conn -> handleNewConnection conn
+    stmRcv <- lift receiveSTM
+    pcs <- gets ccPendingConns
+    val <- liftIO $ atomically $
+        (Left  <$> waitAnySTM pcs)
+         `orElse`
+        (Right <$> stmRcv)
+    case val of
+         Right msg -> handleMessage msg
+         Left conn -> handleCompleteConn conn
     coreController
+
+-- | Handles a received message.
+handleMessage :: CoreActorMsg -> CoreCtlActor ()
+handleMessage (CoreNewConnection conn) = handlePendingConn conn
 
 
 -- }}}
@@ -136,16 +155,34 @@ coreController = do
 data CoreCtlCommand = CCmdPlaceholder
     deriving (Typeable)
 
--- | Handles connection listener events.
-handleNewConnection :: CoreProtocol conn => conn -> CoreCtlActor ()
-handleNewConnection conn = do
+-- | Handles new pending connections.
+handlePendingConn :: PendingConn -> CoreCtlActor ()
+handlePendingConn pc = do
+    me <- lift self
+    -- Start an Async thread for the connection.
+    -- TODO: Clean up these threads if the core controller crashes.
+    pcThread <- liftIO $ async $ pc me
+    -- Add the async thread to our pending connections list.
+    modify $ \s -> do
+        s { ccPendingConns = pcThread : ccPendingConns s }
+
+
+type CompleteConn = (UserId, RemoteClient ())
+
+-- | Handles a completed pending connection.
+handleCompleteConn :: (Async CompleteConn, CompleteConn) -> CoreCtlActor ()
+handleCompleteConn (async, (user, rc)) = do
+    -- Remove the pending thread.
+    modify $ \s -> do
+        s { ccPendingConns = filter (/=async) $ ccPendingConns s }
     -- TODO: Find the correct user controller to attach to.
     -- For now, we'll just attach it to all of them.
     -- Get a list of the user controllers.
-    userCtls <- M.elems <$> gets ccUserCtls
-    -- Send the message.
-    forM_ userCtls $
-        sendUserCtl $ UserCtlNewConnection $ ClientConnection conn
+    userCtlM <- M.lookup user <$> gets ccUserCtls
+    -- Send the client to the user controller.
+    case userCtlM of
+         Just userCtl -> lift $ ucSendNewClient userCtl rc
+         Nothing -> return ()
 
 
 -- }}}
@@ -155,6 +192,11 @@ handleNewConnection conn = do
 -- | Sends the given message to the given user controller.
 sendUserCtl :: UserCtlActorMsg -> UserCtlHandle -> CoreCtlActor ()
 sendUserCtl msg actor = lift $ send actor msg
+
+-- | Waits for any of the given async operations to finish in the STM monad.
+waitAnySTM :: [Async a] -> STM (Async a, a)
+waitAnySTM threads =
+    foldr orElse retry $ map (\a -> waitSTM a >>= return . (a,)) threads
 
 -- }}}
 

@@ -3,9 +3,7 @@
 -- It's not supported by any client, but it provides a good baseline as well as
 -- a good way to test Chat Core's event system.
 module ChatCore.Protocol.JSON
-    ( JSONCoreType
-    , jsonCoreType
-    , JSONConnection
+    ( jsonConnListener
     ) where
 
 import Control.Applicative
@@ -32,67 +30,81 @@ import ChatCore.Protocol
 import ChatCore.Types
 
 
-jsonCoreType :: JSONCoreType
-jsonCoreType = JSONCoreType { jsonCorePort = PortNumber 1337 }
+-- | Creates a JSON connection listener listening on the given port.
+jsonConnListener :: PortID -> ConnListener
+jsonConnListener port = ConnListener
+    { listenerFunc = listenFunc port
+    , clName = "JSON Core Protocol"
+    , clId = "json"
+    }
 
--- | Data structure for the JSON core type.
-data JSONCoreType = JSONCoreType
-    { jsonCorePort :: PortID -- The port to listen on.
-    } deriving (Typeable)
 
-instance CoreType JSONCoreType JSONConnection where
-    coreTypeName _ = "JSON Serialization"
-    coreTypeDesc _ = "A protocol that simply exposes Chat Core's internal event system via JSON serialization."
-    connectionListener coreType = do
-        liftIO $ putStrLn "JSON core type is listening."
-        -- Wait for a connection.
-        sock <- liftIO $ listenOn (jsonCorePort coreType)
-        -- Accept connections.
-        forever $ acceptConnection sock
+-- | Client listener function for Chat Core's JSON protocol.
+listenFunc :: PortID -> Source IO PendingConn
+listenFunc port = do
+    -- Wait for a connection.
+    sock <- liftIO $ listenOn port
+    -- Accept connections.
+    forever $ acceptConnection sock
 
 -- | Accepts a new connection on the given socket.
-acceptConnection :: Socket -> ConnectionListener ()
+acceptConnection :: Socket -> Source IO PendingConn
 acceptConnection sock = do
-    liftIO $ putStrLn "JSON connection listener is awaiting a new connection."
+    liftIO $ putStrLn "JSON connection listener is awaiting a connection."
     -- Accept the sock.
     (handle, host, port) <- liftIO $ accept sock
-    -- Create the connection object.
-    let conn = JSONConnection {
-          jcHandle = handle
-        , jcRemoteHost = host
-        , jcPortNumber = port
-        }
-    -- Give an IO action that just returns our connection object.
-    -- If we wanted to do any processing, we would do so inside this IO
-    -- action.
-    newConnection conn
+    -- Create a pending connection from the handle.
+    yield $ pendingConn handle host port
 
 
--- | Data structure representing a JSON core connection.
-data JSONConnection = JSONConnection
-    { jcHandle     :: Handle       -- | IO handle for reading and writing.
-    , jcRemoteHost :: HostName     -- | The client's hostname.
-    , jcPortNumber :: PortNumber   -- | The port number.
-    } deriving (Typeable)
+-- | Handles authentication an initialization for the JSON protocol.
+pendingConn :: Handle -> HostName -> PortNumber -> PendingConn
+pendingConn handle host port coreCtl = do
+    liftIO $ putStrLn "JSON connection pending..."
+    -- TODO: Implement authentication for the JSON protocol.
+    return ("Forkk", connection handle host port)
 
-instance CoreProtocol JSONConnection where
-    eventListener conn = do
-        src $= (CL.map $ eitherDecodeStrict)
-            -- Log the error if the parsing failed. Otherwise, convert the
-            -- Either to a Maybe and pass it on.
-            $= (CL.mapMaybeM $ logParseError)
-      where
-        src = (yield =<< (lift $ B.hGetLine $ jcHandle conn)) >> src
-        -- If the given argument is a parse error message, log it.
-        logParseError (Right cmd) = do
-            return $ Just cmd
-        logParseError (Left err) = do
-            liftIO $ putStrLn ("Error parsing JSON message: " ++ err)
-            return Nothing
 
-    sendEvent conn msg = do
-        let h = jcHandle conn
-        TL.hPutStrLn h $ TL.decodeUtf8 $ encode msg
+-- {{{ Connection Function
+
+-- | The `RemoteClient` function.
+connection :: Handle -> HostName -> PortNumber -> RemoteClient ()
+connection handle host port = do
+    liftIO $ putStrLn "JSON connection started."
+    val <- coreEvtOr $ B.hGetLine handle
+    case val of
+         Left ce -> handleCoreEvt handle ce
+         Right msgData ->
+             maybe (return ()) handleClientMsg =<< parseClientMsgM msgData
+    connection handle host port
+  where
+    -- Handle core events or client commands.
+    evtHandler (Left evt) = handleCoreEvt handle evt
+    evtHandler (Right msg) = handleClientMsg msg
+    -- Parses the given message from the client.
+    parseClientMsgM msgData = do
+        -- Log the error if the parsing failed. Otherwise, convert the
+        -- Either to a Maybe and pass it on.
+        logParseError $ eitherDecodeStrict msgData
+    -- If the given argument is a parse error message, log it.
+    logParseError (Right cmd) = do
+        return $ Just cmd
+    logParseError (Left err) = do
+        liftIO $ putStrLn ("Error parsing JSON message: " ++ err)
+        return Nothing
+
+-- }}}
+
+
+-- | Handles a message from the client.
+handleClientMsg :: ClientCommand -> RemoteClient ()
+handleClientMsg = receivedClientCmd
+
+-- | Handles a core event.
+handleCoreEvt :: Handle -> CoreEvent -> RemoteClient ()
+handleCoreEvt handle evt = do
+    liftIO $ TL.hPutStrLn handle $ TL.decodeUtf8 $ encode evt
+
 
 -- {{{ JSON
 
