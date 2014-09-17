@@ -6,6 +6,7 @@ module ChatCore.UserController
     ) where
 
 import Control.Concurrent.Actor
+import Control.Monad.IO.Class
 
 import {-# SOURCE #-} ChatCore.Events
 
@@ -14,7 +15,7 @@ type UserCtlHandle = ActorHandle UserCtlActorMsg
 data UserCtlActorMsg
 
 
-ucSendClientCmd :: ActorMessage m => UserCtlHandle -> ClientCommand -> ActorM m ()
+ucSendClientCmd :: (MonadIO m) => UserCtlHandle -> ClientCommand -> m ()
 
-ucSendCoreEvt :: ActorMessage m => UserCtlHandle -> CoreEvent -> ActorM m ()
+ucSendCoreEvt :: (MonadIO m) => UserCtlHandle -> CoreEvent -> m ()
 

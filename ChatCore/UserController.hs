@@ -13,8 +13,8 @@ module ChatCore.UserController
 
 import Control.Applicative
 import Control.Concurrent.Actor
+import Control.Monad.State
 import Control.Monad.Trans
-import Control.Monad.Trans.State
 import Data.Conduit
 import qualified Data.Conduit.List as CL
 import Data.Default
@@ -57,20 +57,20 @@ type UserCtlHandle = ActorHandle UserCtlActorMsg
 startUserCtl :: UserId -> CoreCtlHandle -> IO UserCtlHandle
 startUserCtl usrId coreHandle = do
     -- TODO: Look up the user in the database and load their information.
-    hand <- spawnStateActor initUserCtlActor $ def { usUserId = usrId }
+    hand <- spawnActor $ evalStateT initUserCtlActor $ def { usUserId = usrId }
     return hand -- UserCtlHandle usrId addr
 
 
 -- | Sends the given client command to the given user controller.
-ucSendClientCmd :: ActorMessage m => UserCtlHandle -> ClientCommand -> ActorM m ()
+ucSendClientCmd :: (MonadIO m) => UserCtlHandle -> ClientCommand -> m ()
 ucSendClientCmd uctl cmd = send uctl $ UserCtlClientCommand cmd
 
 -- | Sends the given core event to the given user controller.
-ucSendCoreEvt :: ActorMessage m => UserCtlHandle -> CoreEvent -> ActorM m ()
+ucSendCoreEvt :: (MonadIO m) => UserCtlHandle -> CoreEvent -> m ()
 ucSendCoreEvt uctl evt = send uctl $ UserCtlCoreEvent evt
 
 -- | Sends the given new client to the given user controller.
-ucSendNewClient :: ActorMessage m => UserCtlHandle -> RemoteClient () -> ActorM m ()
+ucSendNewClient :: (MonadIO m) => UserCtlHandle -> RemoteClient () -> m ()
 ucSendNewClient uctl rc = send uctl $ UserCtlNewClient rc
 
 -- }}}
@@ -92,8 +92,8 @@ instance Default UserCtlState where
         , usUserId = undefined
         }
 
--- | State monad for the user controller actor.
-type UserCtlActor = StateActorM UserCtlActorMsg UserCtlState
+-- | Monad constraint type for the user controller actor.
+type UserCtlActor m = (MonadActor UserCtlActorMsg m, MonadState UserCtlState m)
 
 -- }}}
 
@@ -102,7 +102,7 @@ type UserCtlActor = StateActorM UserCtlActorMsg UserCtlState
 -- | Gets the user's network list from the database.
 -- TODO: Implement database stuff. For now this just returns a hard coded list
 -- for testing.
-getNetworkList :: UserCtlActor [IRCNetwork]
+getNetworkList :: (UserCtlActor m) => m [IRCNetwork]
 getNetworkList = return
     [ IRCNetwork { inName = "EsperNet"
                  , inServers = [ IRCServer "auto" "irc.esper.net" $ PortNumber 6667 ]
@@ -112,25 +112,25 @@ getNetworkList = return
     ]
 
 -- | Starts a network controller for the given IRCNetwork.
-addNetController :: IRCNetwork -> UserCtlActor ()
+addNetController :: (UserCtlActor m) => IRCNetwork -> m ()
 addNetController net = do
-    me <- lift self
+    me <- self
     -- Spawn the network controller and link to it.
     hand <- liftIO $ startNetCtl net me
-    --lift $ linkActorHandle hand -- TODO: Implement linking in hactor
+    -- linkActorHandle hand -- TODO: Implement linking in hactor
     modify $ \s -> do
         s { usNetCtls = M.insert (inName net) hand $ usNetCtls s }
 
 -- | Forwards the given message to the network controller with the given ID.
 -- If there is no such network, this function does nothing.
-msgToNetwork :: ChatNetworkId -> NetCtlActorMsg -> UserCtlActor ()
+msgToNetwork :: (UserCtlActor m) => ChatNetworkId -> NetCtlActorMsg -> m ()
 msgToNetwork cnId msg = do
     (gets $ M.lookup cnId . usNetCtls) >>=
-        (maybe (return ()) $ lift . (flip send $ msg))
+        (maybe (return ()) $ (flip send $ msg))
 
 -- | Forwards the client command to the network controller with the given ID.
 -- If there is no such network, this function does nothing.
-forwardClientCmd :: ChatNetworkId -> ClientCommand -> UserCtlActor ()
+forwardClientCmd :: (UserCtlActor m) => ChatNetworkId -> ClientCommand -> m ()
 forwardClientCmd cnId ccmd = msgToNetwork cnId $ NetCtlClientCmd ccmd
 
 -- }}}
@@ -140,7 +140,7 @@ forwardClientCmd cnId ccmd = msgToNetwork cnId $ NetCtlClientCmd ccmd
 -- | Entry point for the user control actor.
 -- Initializes the actor, loads the network list, and starts the network
 -- controllers.
-initUserCtlActor :: UserCtlActor ()
+initUserCtlActor :: (UserCtlActor m) => m ()
 initUserCtlActor = do
     -- Start network actors.
     getNetworkList >>= mapM_ addNetController
@@ -148,10 +148,10 @@ initUserCtlActor = do
     userController
 
 -- | The user controller actor's main function.
-userController :: UserCtlActor ()
+userController :: (UserCtlActor m) => m ()
 userController = do
     -- Receive the next message.
-    msg <- lift receive
+    msg <- receive
     case msg of
          UserCtlClientCommand ccmd -> handleClientCommand ccmd
          UserCtlCoreEvent evt -> handleCoreEvent evt
@@ -164,7 +164,7 @@ userController = do
 -- {{{ Event handlers
 
 -- | Handles client commands.
-handleClientCommand :: ClientCommand -> UserCtlActor ()
+handleClientCommand :: (UserCtlActor m) => ClientCommand -> m ()
 
 -- Network controller commands.
 handleClientCommand msg@(SendMessage netId _ _ _) = forwardClientCmd netId msg
@@ -173,15 +173,15 @@ handleClientCommand msg@(PartChannel netId _ _)   = forwardClientCmd netId msg
 
 
 -- | Handles core events from the network controller.
-handleCoreEvent :: CoreEvent -> UserCtlActor ()
+handleCoreEvent :: (UserCtlActor m) => CoreEvent -> m ()
 handleCoreEvent msg = do
     gets usClients >>= (mapM_ $ \rc -> liftIO $ rcSendCoreEvt rc msg)
 
 
 -- | Handles a new client connection.
-handleNewClient :: RemoteClient () -> UserCtlActor ()
+handleNewClient :: (UserCtlActor m) => RemoteClient () -> m ()
 handleNewClient rc = do
-    me <- lift self
+    me <- self
     let clientActor = execRemoteClient me rc
     -- Start an actor for the client.
     rcHandle <- liftIO $ spawnActor clientActor

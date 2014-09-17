@@ -125,8 +125,8 @@ fromRCMsg :: RemoteClientMsg -> CoreEvent
 fromRCMsg (RCCoreEventMsg evt) = evt
 
 
-rcSendCoreEvt :: RemoteClientHandle -> CoreEvent -> IO ()
-rcSendCoreEvt rc = sendIO rc . RCCoreEventMsg
+rcSendCoreEvt :: (MonadIO m) => RemoteClientHandle -> CoreEvent -> m ()
+rcSendCoreEvt rc = send rc . RCCoreEventMsg
 
 
 instance MonadBase IO RemoteClient where

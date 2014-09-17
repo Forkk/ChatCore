@@ -112,7 +112,7 @@ spawnConnListener coreCtl cl = do
 -- | Actor which runs a connection listener.
 runConnListener :: CoreCtlHandle -> ConnListener -> ActorM () ()
 runConnListener coreCtl cl =
-    lift (listenerFunc cl $$ CL.mapM_ (sendIO coreCtl . CoreNewConnection))
+    liftIO (listenerFunc cl $$ CL.mapM_ (send coreCtl . CoreNewConnection))
 
 -- }}}
 
