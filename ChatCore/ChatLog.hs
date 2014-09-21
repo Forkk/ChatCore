@@ -17,33 +17,20 @@ module ChatCore.ChatLog
     ) where
 
 import Control.Applicative
-import Control.Exception
-import Control.Monad
-import Control.Monad.IO.Class
-import Control.Monad.Trans.Resource
-import Control.Monad.Trans.State
-import Data.Aeson
 import Data.List
 import Data.Maybe
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as B8
-import qualified Data.ByteString.Lazy as BL
-import qualified Data.ByteString.Lazy.Char8 as BL8
-import qualified Data.Map as M
 import qualified Data.Text as T
 import qualified Data.Text.Lazy as TL
 import qualified Data.Text.Lazy.IO as TL
-import Data.Time.Calendar
-import Data.Time.Clock
+import Data.Time
 import System.Directory
 import System.FilePath
-import System.IO
 import System.IO.Unsafe
 
 import ChatCore.ChatLog.Line
 import ChatCore.ChatLog.File
-import ChatCore.Util
-import ChatCore.Util.Error
 
 -- | The chat logger object. This stores information about the chat logger.
 -- Currently this doesn't do much, but it may be used for caching stuff later.
@@ -78,12 +65,12 @@ loadChatLog clogDir = do
 -- {{{ Write
 
 writeLogLine :: ChatLog -> LogLine -> IO ()
-writeLogLine log line = do
+writeLogLine chatLog line = do
     ensureExists bufDir
     -- TODO: Investigate UTF-8 mangling in here.
     TL.appendFile logFile (logLineToStr line `TL.append` "\n")
   where
-    bufDir = chatLogDir log </> T.unpack (logLineBuffer line)
+    bufDir = chatLogDir chatLog </> T.unpack (logLineBuffer line)
     logFile = bufDir </> logFileName (logFileForLine line)
 
 ensureExists :: FilePath -> IO ()
@@ -99,7 +86,7 @@ ensureExists dir = do
 
 -- | Reads a list of lines from the given buffer starting at the given time.
 readLog :: ChatLog -> BufferId -> UTCTime -> IO [LogLine]
-readLog log bufId startTime = do
+readLog chatLog bufId startTime = do
     -- Get a list of log files in the given buffer and sort them by date.
     logIds <- sort <$> filter fileBeforeStart <$> logFilesInDir bufDir
     -- Now read all the files one by one and concatenate them into one big list
@@ -108,7 +95,7 @@ readLog log bufId startTime = do
     -- We're using unsafePerformIO here in order to have this done lazily.
     return $ concatMap doRead logIds
   where
-    bufDir = chatLogDir log </> T.unpack bufId
+    bufDir = chatLogDir chatLog </> T.unpack bufId
     startDay = utctDay startTime
     fileBeforeStart fileId = dayForLogFile fileId <= startDay
     lineBeforeStart line = logLineTime line <= startTime
@@ -116,15 +103,15 @@ readLog log bufId startTime = do
     doRead file = unsafePerformIO $ do
         putStrLn ("Reading " ++ show file)
         -- TODO: Handle exceptions from readFile
-        lines <- filter lineBeforeStart <$> readLogFile log bufId file
-        seq lines $ return lines
+        logLines <- filter lineBeforeStart <$> readLogFile chatLog bufId file
+        seq logLines $ return logLines
 
 -- | Reads the given log file in the given buffer in the given chat log.
 readLogFile :: ChatLog -> BufferId -> LogFileId -> IO [LogLine]
-readLogFile log buf fid =
+readLogFile chatLog buf fid =
     mapMaybe (parseLogLine buf) <$> reverse <$> B8.lines <$> B.readFile logPath
   where
-    logPath = chatLogDir log </> T.unpack buf </> logFileName fid
+    logPath = chatLogDir chatLog </> T.unpack buf </> logFileName fid
 
 -- }}}
 

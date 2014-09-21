@@ -10,24 +10,18 @@ module ChatCore.ChatLog.Line
 
 import Control.Applicative hiding (many, (<|>))
 import Control.Error
-import Data.Aeson
 import qualified Data.ByteString as B
 import Data.Maybe
 import Data.Monoid
 import qualified Data.Text as T
 import qualified Data.Text.Lazy as TL
 import qualified Data.Text.Lazy.Builder as TL
-import Data.Text.Buildable
-import Data.Time.Calendar
-import Data.Time.Clock
-import Data.Time.Format
+import Data.Time
 import Text.Parsec
-import Text.Parsec.ByteString.Lazy
 import System.Locale
 
 import ChatCore.Events
 import ChatCore.Types
-import ChatCore.Util.Parsec
 
 type BufferId = T.Text
 
@@ -42,33 +36,6 @@ data LogLine = LogLine
     , logLineTime   :: UTCTime
     , logLineEvent  :: LogEvent
     } deriving (Show)
-
--- {{{ JSON
-
-instance ToJSON LogEvent where
-    toJSON (LogBufEvent evt) = toJSON evt
-
-instance FromJSON LogEvent where
-    parseJSON obj = LogBufEvent <$> parseJSON obj
-
--- {{{ Log Line JSON
-
-instance FromJSON LogLine where
-    -- The buffer name is not included in the line. It will be added by the
-    -- readLogFile function.
-    parseJSON (Object obj) = LogLine ""
-        <$> obj .: "time"
-        <*> obj .: "event"
-
-instance ToJSON LogLine where
-    toJSON line = object
-        [ "time"    .= logLineTime line
-        , "event"   .= logLineEvent line
-        ]
-
--- }}}
-
--- }}}
 
 -- {{{ To/From String
 
@@ -93,19 +60,22 @@ bufEvtInfo (UserQuit user msgM) = (["quit", user], msgM)
 
 
 -- | Reads a log event from the given metadata and content.
-logEvtFromInfo :: [T.Text] -> Maybe T.Text -> LogEvent
+logEvtFromInfo :: [T.Text] -> Maybe T.Text -> Maybe LogEvent
 
 -- Message
 logEvtFromInfo ["recvmsg", sender, mtypeStr] (Just msg) =
-    LogBufEvent $ ReceivedMessage sender msg (mtype mtypeStr)
+    LogBufEvent <$> ReceivedMessage sender msg <$> mtype mtypeStr
   where
-    mtype "PRIVMSG" = MtPrivmsg
-    mtype "NOTICE" = MtNotice
+    mtype "PRIVMSG" = Just MtPrivmsg
+    mtype "NOTICE" = Just MtNotice
+    mtype _ = Nothing
 
 -- Join, Part, Quit
-logEvtFromInfo ["join", user] Nothing = LogBufEvent $ UserJoin user
-logEvtFromInfo ["part", user] msgM = LogBufEvent $ UserPart user msgM
-logEvtFromInfo ["quit", user] msgM = LogBufEvent $ UserQuit user msgM
+logEvtFromInfo ["join", user] Nothing = Just $ LogBufEvent $ UserJoin user
+logEvtFromInfo ["part", user] msgM = Just $ LogBufEvent $ UserPart user msgM
+logEvtFromInfo ["quit", user] msgM = Just $ LogBufEvent $ UserQuit user msgM
+
+logEvtFromInfo _ _ = Nothing
 
 -- }}}
 
@@ -126,10 +96,10 @@ logLineBuilder time meta contentM =
     <> contentBuilder contentM
   where
     metaBuilder [] = mempty
-    metaBuilder (meta:metas) =
+    metaBuilder (m:ms) =
            TL.fromText "|"
-        <> TL.fromText meta
-        <> metaBuilder metas
+        <> TL.fromText m
+        <> metaBuilder ms
 
     contentBuilder (Just content) =
            TL.fromText ": "
@@ -141,10 +111,10 @@ logLineBuilder time meta contentM =
 -- {{{ Crazy parsing nonsense
 
 parseLogLine :: BufferId -> B.ByteString -> Maybe LogLine
-parseLogLine bufId line = fromInfo <$> infoM
+parseLogLine bufId line = fromInfo =<< infoM
   where
     fromInfo (time, meta, content) =
-        LogLine bufId time $ logEvtFromInfo meta content
+        LogLine bufId time <$> logEvtFromInfo meta content
 
     infoM = hush $ parse parser "Chat Log Line" line
 
@@ -172,10 +142,14 @@ parseLogLine bufId line = fromInfo <$> infoM
 
 -- }}}
 
+timeFormat :: String
 timeFormat = "%s"
 
 -- TODO: Come up with a better way of doing timestamps. These functions are a
 -- major performance bottleneck.
+formatTime' :: UTCTime -> String
 formatTime' = formatTime defaultTimeLocale timeFormat
+
+parseTime' :: String -> Maybe UTCTime
 parseTime' = parseTime defaultTimeLocale timeFormat
 

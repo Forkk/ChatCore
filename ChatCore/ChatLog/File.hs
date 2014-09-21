@@ -16,20 +16,9 @@ module ChatCore.ChatLog.File
 
 import Control.Applicative
 import Control.Error
-import Control.Monad
-import Control.Monad.IO.Class
-import Control.Monad.Trans
-import Control.Monad.Trans.State
-import Control.Monad.Trans.Resource
-import Data.Conduit
-import qualified Data.Conduit.List as CL
-import qualified Data.Text as T
-import qualified Data.Text.IO as T
-import Data.Time.Calendar
-import Data.Time.Clock
+import Data.Time
 import System.Directory
 import System.FilePath
-import System.IO
 import Text.Parsec
 import Text.Printf
 

@@ -14,7 +14,7 @@ module ChatCore.Protocol
     -- * Connection Listener
       ConnListener (..)
     -- * Pending Connection
-    , PendingConn (..)
+    , PendingConn
     -- * Remote Client
     , RemoteClient
     , RemoteClientMsg (..)
@@ -32,7 +32,6 @@ import Control.Applicative
 import Control.Concurrent.Actor
 import Control.Concurrent.Async
 import Control.Concurrent.STM
-import Control.Concurrent.STM.TBMChan
 import Control.Monad
 import Control.Monad.Base
 import Control.Monad.Trans
@@ -40,10 +39,7 @@ import Control.Monad.Trans.Control
 import Control.Monad.Trans.Reader
 import Control.Monad.Trans.Resource
 import Data.Conduit
-import Data.Conduit.TMChan
-import qualified Data.Conduit.List as CL
 import qualified Data.Text as T
-import Data.Typeable
 
 import ChatCore.Events
 import ChatCore.Types

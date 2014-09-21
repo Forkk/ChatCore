@@ -17,13 +17,12 @@ module ChatCore.IRC.Line
     ) where
 
 import Control.Monad
-import Control.Applicative ((<$>), (<*>))
+import Control.Applicative hiding ((<|>))
 import Data.Monoid
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.Text as T
 import qualified Data.Text.Lazy.Builder as TL
-import qualified Data.Text.Encoding as T
 import qualified Data.Text.Lazy.Encoding as TL
 import Data.Typeable
 import Text.Parsec
@@ -145,13 +144,22 @@ assertParsed name testData parser expected = do
     parseErrMsg err = "'" ++ name ++ "' failed to parse with the following error:\n" ++ show err
     wrongValMsg val = "'" ++ name ++ "' parsed to an unexpected value:\n" ++ show val
 
+
+ircLineTestCase :: String -> B.ByteString -> IRCLine -> Test
 ircLineTestCase msg str line = TestList
     [ TestCase (assertParsed msg str lineParser line)
     , TestCase (assertEqual (msg ++ " line to text") (lineToByteString line) str)
     ]
 
-lineParserTests = TestList [lineParserTest1, lineParserTest2, lineParserTest3, lineParserTest4]
+lineParserTests :: Test
+lineParserTests = TestList
+    [ lineParserTest1
+    , lineParserTest2
+    , lineParserTest3
+    , lineParserTest4
+    ]
 
+lineParserTest1 :: Test
 lineParserTest1 = ircLineTestCase "parse line with arguments, source, and body"
     ":Forkk!~forkk@awesome/forkk PRIVMSG #channel :test body content"
     IRCLine
@@ -161,6 +169,7 @@ lineParserTest1 = ircLineTestCase "parse line with arguments, source, and body"
         , ilBody        = Just "test body content"
         }
 
+lineParserTest2 :: Test
 lineParserTest2 = ircLineTestCase "parse line with arguments and body, but no source"
     "PRIVMSG #channel :test body content"
     IRCLine
@@ -170,6 +179,7 @@ lineParserTest2 = ircLineTestCase "parse line with arguments and body, but no so
         , ilBody        = Just "test body content"
         }
 
+lineParserTest3 :: Test
 lineParserTest3 = ircLineTestCase "parse line with source and body, but no arguments"
     ":Forkk!~forkk@awesome/forkk PRIVMSG :test body content"
     IRCLine
@@ -179,6 +189,7 @@ lineParserTest3 = ircLineTestCase "parse line with source and body, but no argum
         , ilBody        = Just "test body content"
         }
 
+lineParserTest4 :: Test
 lineParserTest4 = ircLineTestCase "parse line with source and arguments, but no body"
     ":Forkk!~forkk@awesome/forkk PRIVMSG #channel"
     IRCLine

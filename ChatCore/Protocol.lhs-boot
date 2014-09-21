@@ -10,14 +10,9 @@ module ChatCore.Protocol
 
 import Control.Applicative
 import Control.Concurrent.Actor
-import Control.Monad
-import Control.Monad.Base
-import Control.Monad.Trans.Control
 import Control.Monad.Trans.Reader
 import Control.Monad.Trans.Resource
 import Control.Monad.IO.Class
-import Data.Conduit
-import Data.Typeable
 import {-# SOURCE #-} ChatCore.Events
 import {-# SOURCE #-} ChatCore.UserController
 

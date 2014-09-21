@@ -5,7 +5,6 @@ import qualified Data.Text as T
 
 import ChatCore.IRC.Commands
 import ChatCore.IRC.Connection
-import ChatCore.IRC.Line
 import ChatCore.Types
 
 sendPongCmd :: (MonadIRC m) => Maybe T.Text -> m ()

@@ -2,7 +2,6 @@
 -- | Module for the IRC library's IRC command type definitions.
 module ChatCore.IRC.Commands where
 
-import Data.Text
 import ChatCore.Util.KeyedEnum
 
 mkKeyedEnum "IRCCommand" "icmdFromStr" "icmdToStr" (Just "ICmdOther")
@@ -19,4 +18,7 @@ mkKeyedEnum "IRCCommand" "icmdFromStr" "icmdToStr" (Just "ICmdOther")
     , ("ICmdPing", "PING")
     , ("ICmdPong", "PONG")
     ]
+
+icmdToStr :: IRCCommand -> String
+icmdFromStr :: String -> IRCCommand
 

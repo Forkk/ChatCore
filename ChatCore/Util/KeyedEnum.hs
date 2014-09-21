@@ -22,9 +22,7 @@ module ChatCore.Util.KeyedEnum
 import Control.Applicative
 import Data.Int
 import Data.Word
-import Data.List
 import Data.Maybe
-import qualified Data.Text as T
 import Language.Haskell.TH
 
 

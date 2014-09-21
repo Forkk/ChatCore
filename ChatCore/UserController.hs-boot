@@ -1,6 +1,6 @@
 module ChatCore.UserController
     ( UserCtlHandle
-    , UserCtlActorMsg (..)
+    , UserCtlActorMsg
     , ucSendClientCmd
     , ucSendCoreEvt
     ) where

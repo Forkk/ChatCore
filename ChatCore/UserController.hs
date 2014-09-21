@@ -15,33 +15,23 @@ import Control.Applicative
 import Control.Concurrent.Actor
 import Control.Lens
 import Control.Monad.State
-import Control.Monad.Trans
-import Data.Conduit
-import qualified Data.Conduit.List as CL
 import Data.Default
-import Data.List
 import qualified Data.Map as M
-import qualified Data.Sequence as S
-import qualified Data.Text as T
-import Data.Typeable
 import Network
 
 import ChatCore.Events
 import ChatCore.Protocol
 import ChatCore.Types
-import ChatCore.Util.StateActor
-
 import {-# SOURCE #-} ChatCore.CoreController
 import ChatCore.NetworkController
-
-import ChatCore.Protocol
 
 -- {{{ State and types
 
 data UserCtlState = UserCtlState
-    { _usNetCtls     :: M.Map ChatNetworkId NetCtlHandle -- Network controller handles for the user's networks.
-    , _usClients     :: [RemoteClientHandle] -- The clients connected to this user.
-    , _usUserId      :: UserId
+    { _usNetCtls    :: M.Map ChatNetworkId NetCtlHandle -- Network controller handles for the user's networks.
+    , _usClients    :: [RemoteClientHandle] -- The clients connected to this user.
+    , _usUserId     :: UserId
+    , _usCoreCtl    :: CoreCtlHandle
     }
 makeLenses ''UserCtlState
 
@@ -52,6 +42,7 @@ instance Default UserCtlState where
         -- The undefined should be OK in this case. If the user ID is somehow
         -- not set, the actor should crash anyway.
         , _usUserId = undefined
+        , _usCoreCtl = undefined
         }
 
 -- | Monad constraint type for the user controller actor.
@@ -60,13 +51,6 @@ type UserCtlActor m = (MonadActor UserCtlActorMsg m, MonadState UserCtlState m)
 -- }}}
 
 -- {{{ External Interface
-
--- data UserCtlHandle = UserCtlHandle
---     { ucId      :: UserId
---     , ucActor   :: Address
---     }
-
--- userCtlId = ucId
 
 data UserCtlActorMsg
     = UserCtlCoreEvent CoreEvent
@@ -81,8 +65,9 @@ type UserCtlHandle = ActorHandle UserCtlActorMsg
 startUserCtl :: UserId -> CoreCtlHandle -> IO UserCtlHandle
 startUserCtl usrId coreHandle = do
     -- TODO: Look up the user in the database and load their information.
-    hand <- spawnActor $ evalStateT initUserCtlActor $ def (usUserId .~ usrId)
-    return hand -- UserCtlHandle usrId addr
+    hand <- spawnActor $ evalStateT initUserCtlActor $
+        def (usUserId .~ usrId) (usCoreCtl .~ coreHandle)
+    return hand
 
 
 -- | Sends the given client command to the given user controller.

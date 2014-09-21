@@ -1,13 +1,9 @@
 module ChatCore.Types where
 
 import Control.Applicative
-import Control.Concurrent.Actor
-import Control.Monad
 import Data.Aeson
 import qualified Data.Text as T
 import Network
-
-import {-# SOURCE #-} ChatCore.Protocol 
 
 
 type ChatNetworkId = T.Text

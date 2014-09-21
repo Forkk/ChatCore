@@ -66,17 +66,17 @@ bufEvtPairs evt@(ReceivedMessage {}) =
     , "message"     .= recvMsgContent evt
     , "msgtype"     .= recvMsgType evt
     ]
-bufEvtPairs evt@(UserJoin user) =
+bufEvtPairs (UserJoin user) =
     [ "event" .= ("join" :: T.Text)
     , "user"  .= user
     ]
-bufEvtPairs evt@(UserPart user msgM) =
+bufEvtPairs (UserPart user msgM) =
     [ "event"   .= ("part" :: T.Text)
     , "user"    .= user
     ] ++ if isJust msgM
             then ["message" .= fromJust msgM]
             else []
-bufEvtPairs evt@(UserQuit user msgM) =
+bufEvtPairs (UserQuit user msgM) =
     [ "event" .= ("quit" :: T.Text)
     , "user"  .= user
     ] ++ if isJust msgM
@@ -99,6 +99,7 @@ instance FromJSON BufferEvent where
              "part" -> UserPart <$> obj .: "user" <*> obj .: "messsage"
              "quit" -> UserQuit <$> obj .: "user" <*> obj .: "messsage"
              _ -> empty
+    parseJSON _ = empty
 
 -- }}}
 

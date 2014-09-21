@@ -11,26 +11,19 @@ import Control.Concurrent.Actor
 import Control.Concurrent.Async
 import Control.Lens
 import Control.Monad.State
-import Control.Monad.Trans
 import Control.Monad.Trans.Resource
 import Data.Conduit
 import qualified Data.Conduit.List as CL
 import Data.Maybe
 import qualified Data.Text as T
-import qualified Data.Text.IO as T
-import Data.Time.Clock
-import Data.Typeable
+import Data.Time
 import Network
 import System.FilePath
 
 import ChatCore.Events
 import ChatCore.IRC
-import ChatCore.IRC.Commands
-import ChatCore.Protocol
 import ChatCore.Types
 import ChatCore.ChatLog
-import ChatCore.ChatLog.Line
-import ChatCore.Util.StateActor
 import {-# SOURCE #-} ChatCore.UserController
 
 -- {{{ State and types
@@ -39,7 +32,7 @@ import {-# SOURCE #-} ChatCore.UserController
 data NetCtlState = NetCtlState
     { _nsId         :: ChatNetworkId    -- The ID name of this network.
     , _netNick      :: Nick             -- The user's nick.
-    , _netChannels  :: [ChatChan]       -- A list of channels the current user is in.
+    -- , _netChannels  :: [ChatChan]       -- A list of channels the current user is in.
     , _netHost      :: HostName
     , _netPort      :: PortID
     , _netIRCConn   :: IRCConnection
@@ -47,7 +40,6 @@ data NetCtlState = NetCtlState
     , _netChatLog   :: ChatLog          -- The chat log for this network.
     , _netRecvAsync :: Async ()         -- Async thread for receiving messages.
     }
-
 makeLenses ''NetCtlState
 
 -- | Monad constraint type for the network controller actor.
@@ -62,12 +54,6 @@ instance (NetCtlActor m) => MonadIRC m where
 -- }}}
 
 -- {{{ External Interface
-
--- | A handle pointing to a running network controller.
--- data NetCtlHandle = NetCtlHandle
---     { netCtlId  :: ChatNetworkId    -- The ID of the controller's network.
---     , netActor  :: Address          -- The address of the controller's actor.
---     }
 
 -- NOTE: If you change this, be sure to update the hs-boot file too.
 data NetCtlActorMsg
@@ -89,7 +75,7 @@ startNetCtl ircNet ucAddr = do
     hand <- spawnActor $ initNetCtlActor $ NetCtlState
         { _nsId = inName ircNet
         , _netNick = head $ inNicks ircNet
-        , _netChannels = inChannels ircNet
+        -- , _netChannels = inChannels ircNet
         , _netHost = host
         , _netPort = port
         -- Will connect on startup.
