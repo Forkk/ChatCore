@@ -15,6 +15,7 @@ import Control.Applicative
 import Control.Concurrent.Actor
 import Control.Lens
 import Control.Monad.State
+import Control.Monad.Trans.Maybe
 import Data.Default
 import qualified Data.Map as M
 import Network
@@ -22,6 +23,7 @@ import Network
 import ChatCore.Events
 import ChatCore.Protocol
 import ChatCore.Types
+import ChatCore.Util
 import {-# SOURCE #-} ChatCore.CoreController
 import ChatCore.NetworkController
 
@@ -110,9 +112,9 @@ addNetController net = do
 -- | Forwards the given message to the network controller with the given ID.
 -- If there is no such network, this function does nothing.
 msgToNetwork :: (UserCtlActor m) => ChatNetworkId -> NetCtlActorMsg -> m ()
-msgToNetwork netId msg = do
-    netM <- M.lookup netId <$> use usNetCtls
-    maybe (return ()) (\net -> send net msg) netM
+msgToNetwork netId msg = dropMaybeT $ do
+    net <- MaybeT $ use (usNetCtls . at netId)
+    send net msg
 
 -- | Forwards the client command to the network controller with the given ID.
 -- If there is no such network, this function does nothing.

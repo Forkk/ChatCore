@@ -163,10 +163,8 @@ handleCompleteConn :: (CoreCtlActor m) => (Async CompleteConn, CompleteConn) -> 
 handleCompleteConn (thread, (user, rc)) = do
     -- Remove the pending thread.
     ccPendingConns %= filter (/= thread)
-    -- TODO: Find the correct user controller to attach to.
-    -- For now, we'll just attach it to all of them.
-    -- Get a list of the user controllers.
-    userCtlM <- M.lookup user <$> use ccUserCtls
+    -- Find the user controller we're attaching to.
+    userCtlM <- use (ccUserCtls . at user)
     -- Send the client to the user controller.
     case userCtlM of
          Just userCtl -> ucSendNewClient userCtl rc
