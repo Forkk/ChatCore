@@ -8,33 +8,33 @@ import ChatCore.IRC.Connection
 import ChatCore.IRC.Line
 import ChatCore.Types
 
-sendPongCmd :: Maybe T.Text -> IRC ()
+sendPongCmd :: (MonadIRC m) => Maybe T.Text -> m ()
 sendPongCmd host =
     sendLine $ IRCLine Nothing ICmdPong [] host
 
-sendNickCmd :: Nick -> IRC ()
+sendNickCmd :: (MonadIRC m) => Nick -> m ()
 sendNickCmd nick =
     sendLine $ IRCLine Nothing ICmdNick [nick] Nothing
 
-sendUserCmd :: T.Text -> T.Text -> IRC ()
+sendUserCmd :: (MonadIRC m) => T.Text -> T.Text -> m ()
 sendUserCmd username realname =
     sendLine $ IRCLine Nothing ICmdUser [username, "*", "*"] (Just realname)
 
 
-sendPrivMsgCmd :: ChatDest -> T.Text -> IRC ()
+sendPrivMsgCmd :: (MonadIRC m) => ChatDest -> T.Text -> m ()
 sendPrivMsgCmd dest msg =
     sendLine $ IRCLine Nothing ICmdPrivmsg [dest] (Just msg)
 
-sendNoticeCmd :: ChatDest -> T.Text -> IRC ()
+sendNoticeCmd :: (MonadIRC m) => ChatDest -> T.Text -> m ()
 sendNoticeCmd dest msg =
     sendLine $ IRCLine Nothing ICmdNotice [dest] (Just msg)
 
 
-sendJoinCmd :: ChatChan -> IRC ()
+sendJoinCmd :: (MonadIRC m) => ChatChan -> m ()
 sendJoinCmd chan =
     sendLine $ IRCLine Nothing ICmdJoin [chan] Nothing
 
-sendPartCmd :: ChatChan -> T.Text -> IRC ()
+sendPartCmd :: (MonadIRC m) => ChatChan -> T.Text -> m ()
 sendPartCmd chan msg =
     sendLine $ IRCLine Nothing ICmdPart [chan] (Just msg)
 

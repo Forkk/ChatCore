@@ -1,4 +1,4 @@
-{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE UndecidableInstances #-}
 -- | This is a module for handling chat sessions. It handles processing events
 -- for a single user one one of that user's IRC networks.
 module ChatCore.NetworkController
@@ -8,8 +8,11 @@ module ChatCore.NetworkController
     ) where
 
 import Control.Concurrent.Actor
+import Control.Concurrent.Async
+import Control.Lens
 import Control.Monad.State
 import Control.Monad.Trans
+import Control.Monad.Trans.Resource
 import Data.Conduit
 import qualified Data.Conduit.List as CL
 import Data.Maybe
@@ -29,6 +32,34 @@ import ChatCore.ChatLog
 import ChatCore.ChatLog.Line
 import ChatCore.Util.StateActor
 import {-# SOURCE #-} ChatCore.UserController
+
+-- {{{ State and types
+
+-- | Data structure which stores the state of a chat session on a network.
+data NetCtlState = NetCtlState
+    { _nsId         :: ChatNetworkId    -- The ID name of this network.
+    , _netNick      :: Nick             -- The user's nick.
+    , _netChannels  :: [ChatChan]       -- A list of channels the current user is in.
+    , _netHost      :: HostName
+    , _netPort      :: PortID
+    , _netIRCConn   :: IRCConnection
+    , _userCtlAddr  :: UserCtlHandle    -- The user controller.
+    , _netChatLog   :: ChatLog          -- The chat log for this network.
+    , _netRecvAsync :: Async ()         -- Async thread for receiving messages.
+    }
+
+makeLenses ''NetCtlState
+
+-- | Monad constraint type for the network controller actor.
+type NetCtlActor m =
+    ( MonadActor NetCtlActorMsg m
+    , MonadState NetCtlState m
+    , MonadResource m, MonadIRC m)
+
+instance (NetCtlActor m) => MonadIRC m where
+    ircConn = use netIRCConn
+
+-- }}}
 
 -- {{{ External Interface
 
@@ -56,72 +87,49 @@ startNetCtl ircNet ucAddr = do
     let host = servAddress $ head $ inServers ircNet
         port = servPort $ head $ inServers ircNet
     hand <- spawnActor $ initNetCtlActor $ NetCtlState
-        { nsId = inName ircNet
-        , netNick = head $ inNicks ircNet
-        , netChannels = inChannels ircNet
-        , netHost = host
-        , netPort = port
+        { _nsId = inName ircNet
+        , _netNick = head $ inNicks ircNet
+        , _netChannels = inChannels ircNet
+        , _netHost = host
+        , _netPort = port
         -- Will connect on startup.
-        , ircConnection = undefined
-        , userCtlAddr = ucAddr
-        , netChatLog = chatLog
+        , _netIRCConn = undefined
+        , _netRecvAsync = undefined
+        , _userCtlAddr = ucAddr
+        , _netChatLog = chatLog
         }
     return hand
 
 -- }}}
 
--- {{{ State and types
-
--- | Data structure which stores the state of a chat session on a network.
-data NetCtlState = NetCtlState
-    { nsId          :: ChatNetworkId    -- The ID name of this network.
-    , netNick       :: Nick             -- The current user's nick.
-    , netChannels   :: [ChatChan]       -- A list of channels the current user is in.
-    , netHost       :: HostName
-    , netPort       :: PortID
-    , ircConnection :: IRCConnection    -- The IRC connection.
-    , userCtlAddr   :: UserCtlHandle    -- The user controller.
-    , netChatLog    :: ChatLog          -- The chat log for this network.
-    }
-
--- | Monad constraint type for the network controller actor.
-type NetCtlActor m = (MonadActor NetCtlActorMsg m, MonadState NetCtlState m)
-
--- }}}
-
 -- {{{ Main functions
-
--- | An actor spawned by the network controller which receives messages from
--- the IRC connection and sends them as actor messages to the network
--- controller.
-receiveActor :: NetCtlHandle -> IRCConnection -> ActorM () ()
-receiveActor ncActor conn = do
-    line <- liftIO $ evalIRCAction recvLine conn
-    send ncActor $ NetCtlIRCLine line
-    receiveActor ncActor conn
-
 
 -- | Initializes a network controller with the given state.
 initNetCtlActor :: NetCtlState -> ActorM NetCtlActorMsg ()
-initNetCtlActor istate = do
-    -- Connect to IRC.
+initNetCtlActor = evalStateT $ runResourceT $ do
     liftIO $ putStrLn "Connecting to IRC..."
-    connection <- liftIO $ connectIRC (netHost istate) (netPort istate)
-    let state = istate { ircConnection = connection }
-    liftIO $ putStrLn "Connection established. Starting network controller."
-    -- Spawn the receiver actor.
+    -- Connect to IRC.
+    host <- use netHost
+    port <- use netPort
+    (_, conn) <- allocate
+        (connectIRC host port)
+        disconnectIRC
+    netIRCConn .= conn
+    liftIO $ putStrLn "IRC connection established."
+
+    -- Start the receiver thread.
     me <- self
-    recvActor <- liftIO $ spawnActor $ receiveActor me $ ircConnection state
-    --link recvActor -- TODO: Implement linking in hactor
+    recvSrc <- sourceRecvLine
+    (_, rth) <- allocate
+        (async (recvSrc $$ CL.mapM_ (send me . NetCtlIRCLine)))
+        cancel
+    netRecvAsync .= rth
 
-    -- Connect to the network.
-    liftIO $ doIRC (ircConnection state) $ do
-        sendNickCmd $ netNick state
-        sendUserCmd (netNick state) "Chat Core"
-
-    -- Start the network controller's state actor.
-    runStateT networkController state
-    return ()
+    -- Initialize the IRC connection.
+    sendNickCmd =<< use netNick
+    (flip sendUserCmd) "Chat Core" =<< use netNick
+    -- Start the main function.
+    networkController
 
 -- | The actual network controller actor.
 networkController :: (NetCtlActor m) => m ()
@@ -137,21 +145,17 @@ networkController = do
 
 -- {{{ Utility functions
 
--- | Executes an IRC action from within a NetCtlActor context.
-ncIRC :: (NetCtlActor m) => IRC a -> m a
-ncIRC action = gets ircConnection >>= (liftIO . evalIRCAction action)
-
 -- | Sends the given core event to the user controller.
 ncSendCoreEvent :: (NetCtlActor m) => CoreEvent -> m ()
 ncSendCoreEvent evt = do
-    uc <- gets userCtlAddr
+    uc <- use userCtlAddr
     ucSendCoreEvt uc evt
 
 -- | Sends a buffer event for the given buffer.
 bufferEvent :: (NetCtlActor m) => ChatBufferId -> BufferEvent -> m ()
 bufferEvent bufId evt = do
     -- Get the network ID.
-    netId <- gets nsId
+    netId <- use nsId
     -- Send the event and log it.
     ncSendCoreEvent $ BufCoreEvent netId bufId evt
     logEvent bufId $ LogBufEvent evt
@@ -160,7 +164,7 @@ bufferEvent bufId evt = do
 logEvent :: (NetCtlActor m) => BufferId -> LogEvent -> m ()
 logEvent buf evt = do
     time <- liftIO getCurrentTime
-    chatLog <- gets netChatLog
+    chatLog <- use netChatLog
     let logLine = LogLine buf time evt
     liftIO $ writeLogLine chatLog logLine
 
@@ -171,14 +175,14 @@ logEvent buf evt = do
 -- | Handles a client event for the given network controller.
 handleClientCmd :: (NetCtlActor m) => ClientCommand -> m ()
 
-handleClientCmd (JoinChannel _ chan) = ncIRC $ sendJoinCmd chan
+handleClientCmd (JoinChannel _ chan) = sendJoinCmd chan
 handleClientCmd (PartChannel _ chan msg) =
-    ncIRC $ sendPartCmd chan $ fromMaybe "Leaving" msg
+    sendPartCmd chan $ fromMaybe "Leaving" msg
 
 handleClientCmd (SendMessage _ dest msg MtPrivmsg) =
-    ncIRC $ sendPrivMsgCmd dest msg
+    sendPrivMsgCmd dest msg
 handleClientCmd (SendMessage _ dest msg MtNotice) =
-    ncIRC $ sendNoticeCmd dest msg
+    sendNoticeCmd dest msg
 
 
 
@@ -186,7 +190,7 @@ handleClientCmd (SendMessage _ dest msg MtNotice) =
 handleLine :: (NetCtlActor m) => IRCLine -> m ()
 -- Handle PING
 handleLine (IRCLine _ (ICmdPing) _ addr) = do
-    ncIRC $ sendPongCmd addr
+    sendPongCmd addr
 
 -- PRIVMSG and NOTICE
 handleLine (IRCLine (Just sender) (ICmdPrivmsg) [source] (Just msg)) = do

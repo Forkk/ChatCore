@@ -1,24 +1,24 @@
 module ChatCore.IRC.Connection
     ( IRCConnection
     , connectIRC
-    , evalIRCAction
-    , doIRC
+    , disconnectIRC
 
-    , IRC
+    , MonadIRC (..)
 
     , sendLine
     , recvLine
+    , sourceRecvLine
 
     , module ChatCore.IRC.Commands
     , module ChatCore.IRC.Line
     ) where
 
 import Control.Applicative
-import Control.Monad.STM
+import Control.Exception
 import Control.Concurrent (ThreadId, forkIO)
 import Control.Concurrent.STM.TMChan
-import Control.Monad.Trans
-import Control.Monad.Trans.Reader
+import Control.Monad.Base
+import Control.Monad.Reader
 import Control.Error.Util
 import Data.Maybe
 import qualified Data.Text as T
@@ -37,60 +37,40 @@ import ChatCore.IRC.Commands
 import ChatCore.IRC.Line
 
 
+type MonadIRCSuper m = (Functor m, Applicative m, Monad m, MonadIO m)
+
+-- | Class for monads that can run IRC actions.
+class (MonadIRCSuper m) => MonadIRC m where
+    -- | Gets the current IRC connection.
+    ircConn :: m (IRCConnection)
+
+instance (MonadIRCSuper m) => MonadIRC (ReaderT IRCConnection m) where
+    ircConn = ask
+
+
 -- A handle referring to an IRC connection. Contains the channels for reading
 -- and writing as well as a reference to the connection's thread.
 data IRCConnection = IRCConnection
-    { ircSendChan   :: TMChan IRCLine   -- Channel for messages to send to the IRC server.
-    , ircRecvChan   :: TMChan IRCLine   -- Channel for messages received from the IRC server.
-    , ircSendThread     :: ThreadId     -- The connection thread's ID.
-    , ircRecvThread     :: ThreadId     -- The connection thread's ID.
+    { ircServer     :: (HostName, PortID)   -- The hostname and port of the server.
+    , ircHandle     :: Handle               -- The handle for the IRC connection.
     }
 
 
 data IRCState = IRCState
-    { ircServer     :: (HostName, PortID)   -- The hostname and port of the server.
-    , ircHandle     :: Handle               -- The handle for the IRC connection.
-    , stateSendChan :: TMChan IRCLine
-    , stateRecvChan :: TMChan IRCLine
-    }
-
--- Monad for the internal IRC stuff.
-type IRC = ReaderT IRCConnection IO
-
-
--- Executes an IRC action with the given IRC connection.
-evalIRCAction :: IRC a -> IRCConnection -> IO a
-evalIRCAction = runReaderT
-
--- A version of evalIRCAction with its arguments flipped.
-doIRC :: IRCConnection -> IRC a -> IO a
-doIRC = flip evalIRCAction
 
 
 -- | Connects to an IRC server at the given host and port.
-connectIRC :: HostName -> PortID -> IO IRCConnection
+connectIRC :: (MonadIO m) => HostName -> PortID -> m IRCConnection
 connectIRC host port = do
-    -- Create channels.
-    sendChan <- atomically $ newTMChan
-    recvChan <- atomically $ newTMChan
-
     -- Connect
-    handle <- connectTo host port
-
-    -- Start the sender thread.
-    sendThread <- forkIO $ do
-        -- Read from the channel and call sendIRCMessage for each item.
-        sourceTMChan sendChan $$ sendMessages handle
-    recvThread <- forkIO $ do
-        -- Read from the handle, parse each message, and write them to the channel.
-        receiveMessages handle $$ sinkTMChan recvChan True
-
+    handle <- liftIO $ connectTo host port
     return IRCConnection
-        { ircSendChan = sendChan
-        , ircRecvChan = recvChan
-        , ircSendThread = sendThread
-        , ircRecvThread = recvThread
+        { ircServer = (host, port)
+        , ircHandle = handle
         }
+
+disconnectIRC :: (MonadIO m) => IRCConnection -> m ()
+disconnectIRC conn = liftIO $ hClose $ ircHandle $ conn
 
 
 removeCr :: B.ByteString -> B.ByteString
@@ -99,37 +79,27 @@ removeCr str =
        then B.init str
        else str
 
--- | Provides a Source of received IRC messages on the given handle.
-receiveMessages :: Handle -> Source IO IRCLine
-receiveMessages handle =
-    -- Read lines from the handle and parse them.
-    CB.sourceHandle handle $= CB.lines $= CL.map removeCr $= CL.map parseLine $= CL.mapMaybe hush
-
 -- | Sends the given IRC message on the given handle.
-sendMessages :: Handle -> Sink IRCLine IO ()
-sendMessages handle =
-    -- Convert the lines to bytestrings and write them to the handle.
-    CL.map lineToByteString =$ CL.map (`B.append` "\r\n") =$ CB.sinkHandle handle
-
+sendLine :: (MonadIRC m) => IRCLine -> m ()
+sendLine line = do
+    handle <- ircHandle <$> ircConn
+    liftIO $ B.hPut handle (lineToByteString line `B.append` "\r\n")
 
 -- | Gets the next line received from the IRC server.
 -- If no line has been received, blocks until one is received.
-recvLine :: IRC IRCLine
+recvLine :: (MonadIRC m) => m (Maybe IRCLine)
 recvLine = do
-    -- FIXME: This crashes when the channel is closed.
-    recvChan <- asks ircRecvChan
-    mLine <- lift $ atomically $ readTMChan recvChan
-    return $ fromJust mLine
+    handle <- ircHandle <$> ircConn
+    lineBS <- removeCr <$> (liftIO $ B.hGetLine handle)
+    return $ hush $ parseLine lineBS
 
--- | Sends a line to the IRC server.
-sendLine :: IRCLine -> IRC ()
-sendLine line = do
-    sendChan <- asks ircSendChan
-    lift $ atomically $ writeTMChan sendChan line
-
-
--- | Function used primarily for testing which prints all lines received on the
--- given connection.
-printReceivedLines :: IRCConnection -> IO ()
-printReceivedLines conn = (sourceTMChan $ ircRecvChan conn) $$ CL.mapM_ print
+-- | Creates a conduit source of IRC lines received.
+-- This can be run on another thread to receive messages in the background.
+sourceRecvLine :: (MonadIRC m) => m (Source IO IRCLine)
+sourceRecvLine = do
+    handle <- ircHandle <$> ircConn
+    -- Read lines from the handle and parse them.
+    return $ CB.sourceHandle handle
+          $= CB.lines $= CL.map removeCr
+          $= CL.map parseLine $= CL.mapMaybe hush
 
