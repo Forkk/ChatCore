@@ -10,6 +10,7 @@ import Control.Applicative
 import Control.Concurrent.Actor
 import Control.Concurrent.Async
 import Control.Concurrent.STM
+import Control.Lens
 import Control.Monad
 import Control.Monad.Trans
 import Control.Monad.Trans.State
@@ -29,6 +30,27 @@ import ChatCore.UserController
 import ChatCore.Util.StateActor
 
 
+-- {{{ State and types
+
+data CoreCtlState = CoreCtlState
+    { _ccUserCtls :: M.Map UserId UserCtlHandle -- User controller handles.
+    , _ccConnListeners :: [ActorHandle ()]
+    , _ccPendingConns :: [Async (UserId, RemoteClient ())]
+    }
+makeLenses ''CoreCtlState
+
+instance Default CoreCtlState where
+    def = CoreCtlState
+        { _ccUserCtls = M.empty
+        , _ccConnListeners = []
+        , _ccPendingConns = []
+        }
+
+-- | State monad for the core controller actor.
+type CoreCtlActor = StateActorM CoreActorMsg CoreCtlState
+
+-- }}}
+
 -- {{{ External interface
 
 data CoreActorMsg
@@ -42,26 +64,6 @@ type CoreCtlHandle = ActorHandle CoreActorMsg
 -- This does **not** fork to another thread.
 runCoreCtl :: IO ()
 runCoreCtl = runActor $ runStateActor initCoreCtlActor $ def
-
--- }}}
-
--- {{{ State and types
-
-data CoreCtlState = CoreCtlState
-    { ccUserCtls :: M.Map UserId UserCtlHandle -- User controller handles.
-    , ccConnListeners :: [ConnListenerHandle]
-    , ccPendingConns :: [Async (UserId, RemoteClient ())]
-    }
-
-instance Default CoreCtlState where
-    def = CoreCtlState
-        { ccUserCtls = M.empty
-        , ccConnListeners = []
-        , ccPendingConns = []
-        }
-
--- | State monad for the core controller actor.
-type CoreCtlActor = StateActorM CoreActorMsg CoreCtlState
 
 -- }}}
 
@@ -87,8 +89,7 @@ addUserController userId = do
     -- Spawn the user controller and link to it.
     hand <- liftIO $ startUserCtl userId me
     -- lift $ linkActorHandle hand -- TODO: Implement linking in hactor
-    modify $ \s -> do
-        s { ccUserCtls = M.insert userId hand $ ccUserCtls s }
+    ccUserCtls %= M.insert userId hand
 
 
 -- | Starts the given connection listener.
@@ -97,8 +98,7 @@ startConnListener ct = do
     me <- lift self
     hand <- liftIO $ spawnConnListener me ct
     -- lift $ linkActorHandle hand
-    modify $ \s -> do
-        s { ccConnListeners = hand : ccConnListeners s }
+    ccConnListeners %= (hand :)
 
 
 type ConnListenerHandle = ActorHandle ()
@@ -133,7 +133,7 @@ initCoreCtlActor = do
 coreController :: CoreCtlActor ()
 coreController = do
     stmRcv <- lift receiveSTM
-    pcs <- gets ccPendingConns
+    pcs <- use ccPendingConns
     val <- liftIO $ atomically $
         (Left  <$> waitAnySTM pcs)
          `orElse`
@@ -161,24 +161,22 @@ handlePendingConn pc = do
     me <- lift self
     -- Start an Async thread for the connection.
     -- TODO: Clean up these threads if the core controller crashes.
-    pcThread <- liftIO $ async $ pc me
+    thread <- liftIO $ async $ pc me
     -- Add the async thread to our pending connections list.
-    modify $ \s -> do
-        s { ccPendingConns = pcThread : ccPendingConns s }
+    ccPendingConns %= (thread :) -- Lenses make me smile..
 
 
 type CompleteConn = (UserId, RemoteClient ())
 
 -- | Handles a completed pending connection.
 handleCompleteConn :: (Async CompleteConn, CompleteConn) -> CoreCtlActor ()
-handleCompleteConn (async, (user, rc)) = do
+handleCompleteConn (thread, (user, rc)) = do
     -- Remove the pending thread.
-    modify $ \s -> do
-        s { ccPendingConns = filter (/=async) $ ccPendingConns s }
+    ccPendingConns %= filter (/= thread)
     -- TODO: Find the correct user controller to attach to.
     -- For now, we'll just attach it to all of them.
     -- Get a list of the user controllers.
-    userCtlM <- M.lookup user <$> gets ccUserCtls
+    userCtlM <- M.lookup user <$> use ccUserCtls
     -- Send the client to the user controller.
     case userCtlM of
          Just userCtl -> lift $ ucSendNewClient userCtl rc

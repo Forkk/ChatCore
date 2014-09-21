@@ -13,6 +13,7 @@ module ChatCore.UserController
 
 import Control.Applicative
 import Control.Concurrent.Actor
+import Control.Lens
 import Control.Monad.State
 import Control.Monad.Trans
 import Data.Conduit
@@ -34,6 +35,29 @@ import {-# SOURCE #-} ChatCore.CoreController
 import ChatCore.NetworkController
 
 import ChatCore.Protocol
+
+-- {{{ State and types
+
+data UserCtlState = UserCtlState
+    { _usNetCtls     :: M.Map ChatNetworkId NetCtlHandle -- Network controller handles for the user's networks.
+    , _usClients     :: [RemoteClientHandle] -- The clients connected to this user.
+    , _usUserId      :: UserId
+    }
+makeLenses ''UserCtlState
+
+instance Default UserCtlState where
+    def = UserCtlState
+        { _usNetCtls = M.empty
+        , _usClients = []
+        -- The undefined should be OK in this case. If the user ID is somehow
+        -- not set, the actor should crash anyway.
+        , _usUserId = undefined
+        }
+
+-- | Monad constraint type for the user controller actor.
+type UserCtlActor m = (MonadActor UserCtlActorMsg m, MonadState UserCtlState m)
+
+-- }}}
 
 -- {{{ External Interface
 
@@ -57,7 +81,7 @@ type UserCtlHandle = ActorHandle UserCtlActorMsg
 startUserCtl :: UserId -> CoreCtlHandle -> IO UserCtlHandle
 startUserCtl usrId coreHandle = do
     -- TODO: Look up the user in the database and load their information.
-    hand <- spawnActor $ evalStateT initUserCtlActor $ def { usUserId = usrId }
+    hand <- spawnActor $ evalStateT initUserCtlActor $ def (usUserId .~ usrId)
     return hand -- UserCtlHandle usrId addr
 
 
@@ -72,28 +96,6 @@ ucSendCoreEvt uctl evt = send uctl $ UserCtlCoreEvent evt
 -- | Sends the given new client to the given user controller.
 ucSendNewClient :: (MonadIO m) => UserCtlHandle -> RemoteClient () -> m ()
 ucSendNewClient uctl rc = send uctl $ UserCtlNewClient rc
-
--- }}}
-
--- {{{ State and types
-
-data UserCtlState = UserCtlState
-    { usNetCtls     :: M.Map ChatNetworkId NetCtlHandle -- Network controller handles for the user's networks.
-    , usClients     :: [RemoteClientHandle] -- The clients connected to this user.
-    , usUserId      :: UserId
-    }
-
-instance Default UserCtlState where
-    def = UserCtlState
-        { usNetCtls = M.empty
-        , usClients = []
-        -- The undefined should be OK in this case. If the user ID is somehow
-        -- not set, the actor should crash anyway.
-        , usUserId = undefined
-        }
-
--- | Monad constraint type for the user controller actor.
-type UserCtlActor m = (MonadActor UserCtlActorMsg m, MonadState UserCtlState m)
 
 -- }}}
 
@@ -118,15 +120,14 @@ addNetController net = do
     -- Spawn the network controller and link to it.
     hand <- liftIO $ startNetCtl net me
     -- linkActorHandle hand -- TODO: Implement linking in hactor
-    modify $ \s -> do
-        s { usNetCtls = M.insert (inName net) hand $ usNetCtls s }
+    usNetCtls %= M.insert (inName net) hand
 
 -- | Forwards the given message to the network controller with the given ID.
 -- If there is no such network, this function does nothing.
 msgToNetwork :: (UserCtlActor m) => ChatNetworkId -> NetCtlActorMsg -> m ()
-msgToNetwork cnId msg = do
-    (gets $ M.lookup cnId . usNetCtls) >>=
-        (maybe (return ()) $ (flip send $ msg))
+msgToNetwork netId msg = do
+    netM <- M.lookup netId <$> use usNetCtls
+    maybe (return ()) (\net -> send net msg) netM
 
 -- | Forwards the client command to the network controller with the given ID.
 -- If there is no such network, this function does nothing.
@@ -175,7 +176,8 @@ handleClientCommand msg@(PartChannel netId _ _)   = forwardClientCmd netId msg
 -- | Handles core events from the network controller.
 handleCoreEvent :: (UserCtlActor m) => CoreEvent -> m ()
 handleCoreEvent msg = do
-    gets usClients >>= (mapM_ $ \rc -> liftIO $ rcSendCoreEvt rc msg)
+    clients <- use usClients
+    forM_ clients $ \c -> liftIO $ rcSendCoreEvt c msg
 
 
 -- | Handles a new client connection.
@@ -186,7 +188,7 @@ handleNewClient rc = do
     -- Start an actor for the client.
     rcHandle <- liftIO $ spawnActor clientActor
     -- Add the client's handle to our client list.
-    modify $ \s -> s { usClients = rcHandle : usClients s }
+    usClients %= (rcHandle :)
 
 -- }}}
 
