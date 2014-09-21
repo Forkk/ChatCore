@@ -1,3 +1,4 @@
+{-# LANGUAGE UndecidableInstances, IncoherentInstances #-}
 -- | The user controller contains and manages all of the network controllers
 -- and client connections for a user. It is responsible for routing events
 -- between these objects.
@@ -14,12 +15,18 @@ module ChatCore.UserController
 import Control.Applicative
 import Control.Concurrent.Actor
 import Control.Lens
+import Control.Monad.Logger
 import Control.Monad.State
+import Control.Monad.Trans.Control
 import Control.Monad.Trans.Maybe
 import Data.Default
 import qualified Data.Map as M
-import Network
+import Data.Maybe
+import qualified Data.Text as T
+import Database.Persist
+import Database.Persist.Sql
 
+import ChatCore.Database
 import ChatCore.Events
 import ChatCore.Protocol
 import ChatCore.Types
@@ -30,10 +37,11 @@ import ChatCore.NetworkController
 -- {{{ State and types
 
 data UserCtlState = UserCtlState
-    { _usNetCtls    :: M.Map ChatNetworkId NetCtlHandle -- Network controller handles for the user's networks.
+    { _usNetCtls    :: M.Map ChatNetworkName NetCtlHandle -- Network controller handles for the user's networks.
     , _usClients    :: [RemoteClientHandle] -- The clients connected to this user.
-    , _usUserId     :: UserId
+    , _usUserName   :: UserName
     , _usCoreCtl    :: CoreCtlHandle
+    , _usConnPool   :: ConnectionPool
     }
 makeLenses ''UserCtlState
 
@@ -41,14 +49,24 @@ instance Default UserCtlState where
     def = UserCtlState
         { _usNetCtls = M.empty
         , _usClients = []
-        -- The undefined should be OK in this case. If the user ID is somehow
+        -- The undefined should be OK in this case. If the username is somehow
         -- not set, the actor should crash anyway.
-        , _usUserId = undefined
+        , _usUserName = undefined
         , _usCoreCtl = undefined
+        , _usConnPool = undefined
         }
 
 -- | Monad constraint type for the user controller actor.
-type UserCtlActor m = (MonadActor UserCtlActorMsg m, MonadState UserCtlState m)
+type UserCtlActor m =
+    ( MonadActor UserCtlActorMsg m
+    , MonadState UserCtlState m
+    , MonadBaseControl IO m
+    , MonadLogger m)
+
+runDB'UC :: (UserCtlActor m) => SqlPersistT m a -> m a
+runDB'UC t = do
+    pool <- use usConnPool
+    runSqlPool t pool
 
 -- }}}
 
@@ -63,13 +81,17 @@ instance ActorMessage UserCtlActorMsg
 type UserCtlHandle = ActorHandle UserCtlActorMsg
 
 
--- | Starts a user controller for the given user ID.
-startUserCtl :: UserId -> CoreCtlHandle -> IO UserCtlHandle
-startUserCtl usrId coreHandle = do
+-- | Starts a user controller for the user ID in the database.
+startUserCtl :: UserName -> CoreCtlHandle -> ConnectionPool -> IO UserCtlHandle
+startUserCtl userName coreHandle pool =
     -- TODO: Look up the user in the database and load their information.
-    hand <- spawnActor $ evalStateT initUserCtlActor $
-        def (usUserId .~ usrId) (usCoreCtl .~ coreHandle)
-    return hand
+    spawnActor $
+    runStderrLoggingT $
+    evalStateT initUserCtlActor $
+          (usUserName .~ userName)
+        $ (usCoreCtl .~ coreHandle)
+        $ (usConnPool .~ pool)
+        $ def
 
 
 -- | Sends the given client command to the given user controller.
@@ -91,34 +113,34 @@ ucSendNewClient uctl rc = send uctl $ UserCtlNewClient rc
 -- | Gets the user's network list from the database.
 -- TODO: Implement database stuff. For now this just returns a hard coded list
 -- for testing.
-getNetworkList :: (UserCtlActor m) => m [IRCNetwork]
-getNetworkList = return
-    [ IRCNetwork { inName = "EsperNet"
-                 , inServers = [ IRCServer "auto" "irc.esper.net" $ PortNumber 6667 ]
-                 , inNicks = ["ChatCore"]
-                 , inChannels = ["#sporkk"]
-                 }
-    ]
+getNetworkList :: (UserCtlActor m) => m [IrcNetwork]
+getNetworkList = runDB'UC $ do
+    $(logDebugS) "UserController" "Getting network list."
+    userName <- use usUserName
+    $(logDebugS) "UserController" "Done"
+    -- Crash if the user is nonexistant.
+    user <- fromJust <$> getBy (UniqueUserName userName)
+    map entityVal <$> selectList [IrcNetworkUser ==. entityKey user] []
 
 -- | Starts a network controller for the given IRCNetwork.
-addNetController :: (UserCtlActor m) => IRCNetwork -> m ()
+addNetController :: (UserCtlActor m) => IrcNetwork -> m ()
 addNetController net = do
     me <- self
     -- Spawn the network controller and link to it.
     hand <- liftIO $ startNetCtl net me
     -- linkActorHandle hand -- TODO: Implement linking in hactor
-    usNetCtls %= M.insert (inName net) hand
+    usNetCtls %= M.insert (ircNetworkName net) hand
 
 -- | Forwards the given message to the network controller with the given ID.
 -- If there is no such network, this function does nothing.
-msgToNetwork :: (UserCtlActor m) => ChatNetworkId -> NetCtlActorMsg -> m ()
+msgToNetwork :: (UserCtlActor m) => ChatNetworkName -> NetCtlActorMsg -> m ()
 msgToNetwork netId msg = dropMaybeT $ do
     net <- MaybeT $ use (usNetCtls . at netId)
     send net msg
 
 -- | Forwards the client command to the network controller with the given ID.
 -- If there is no such network, this function does nothing.
-forwardClientCmd :: (UserCtlActor m) => ChatNetworkId -> ClientCommand -> m ()
+forwardClientCmd :: (UserCtlActor m) => ChatNetworkName -> ClientCommand -> m ()
 forwardClientCmd cnId ccmd = msgToNetwork cnId $ NetCtlClientCmd ccmd
 
 -- }}}
@@ -141,8 +163,14 @@ userController = do
     -- Receive the next message.
     msg <- receive
     case msg of
-         UserCtlClientCommand ccmd -> handleClientCommand ccmd
-         UserCtlCoreEvent evt -> handleCoreEvent evt
+         UserCtlClientCommand ccmd -> do
+             $(logDebugS) "UserController"
+                 ("Got client command: " `T.append` (T.pack $ show ccmd))
+             handleClientCommand ccmd
+         UserCtlCoreEvent evt -> do
+             $(logDebugS) "UserController"
+                 ("Got core event: " `T.append` (T.pack $ show evt))
+             handleCoreEvent evt
          UserCtlNewClient rc -> handleNewClient rc
     userController
 
@@ -170,6 +198,7 @@ handleCoreEvent msg = do
 -- | Handles a new client connection.
 handleNewClient :: (UserCtlActor m) => RemoteClient () -> m ()
 handleNewClient rc = do
+    $(logDebugS) "UserController" "New client connected to user controller."
     me <- self
     let clientActor = execRemoteClient me rc
     -- Start an actor for the client.

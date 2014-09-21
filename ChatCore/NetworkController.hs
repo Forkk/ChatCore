@@ -10,6 +10,7 @@ module ChatCore.NetworkController
 import Control.Concurrent.Actor
 import Control.Concurrent.Async
 import Control.Lens
+import Control.Monad.Logger
 import Control.Monad.State
 import Control.Monad.Trans.Resource
 import Data.Conduit
@@ -20,6 +21,7 @@ import Data.Time
 import Network
 import System.FilePath
 
+import ChatCore.Database
 import ChatCore.Events
 import ChatCore.IRC
 import ChatCore.Types
@@ -30,7 +32,7 @@ import {-# SOURCE #-} ChatCore.UserController
 
 -- | Data structure which stores the state of a chat session on a network.
 data NetCtlState = NetCtlState
-    { _nsId         :: ChatNetworkId    -- The ID name of this network.
+    { _nsId         :: ChatNetworkName  -- The ID name of this network.
     , _netNick      :: Nick             -- The user's nick.
     -- , _netChannels  :: [ChatChan]       -- A list of channels the current user is in.
     , _netHost      :: HostName
@@ -46,7 +48,8 @@ makeLenses ''NetCtlState
 type NetCtlActor m =
     ( MonadActor NetCtlActorMsg m
     , MonadState NetCtlState m
-    , MonadResource m, MonadIRC m)
+    , MonadResource m, MonadIRC m
+    , MonadLogger m)
 
 instance (NetCtlActor m) => MonadIRC m where
     ircConn = use netIRCConn
@@ -64,20 +67,16 @@ instance ActorMessage NetCtlActorMsg
 
 type NetCtlHandle = ActorHandle NetCtlActorMsg
 
-startNetCtl :: IRCNetwork -> UserCtlHandle -> IO NetCtlHandle
+startNetCtl :: IrcNetwork -> UserCtlHandle -> IO NetCtlHandle
 startNetCtl ircNet ucAddr = do
     -- Open the chat log for this network.
-    chatLog <- mkChatLog ("log" </> (T.unpack $ inName ircNet))
-    -- Connect to the first server.
-    -- TODO: Implement connecting to other servers in the list.
-    let host = servAddress $ head $ inServers ircNet
-        port = servPort $ head $ inServers ircNet
+    chatLog <- mkChatLog ("log" </> (T.unpack $ ircNetworkName ircNet))
     hand <- spawnActor $ initNetCtlActor $ NetCtlState
-        { _nsId = inName ircNet
-        , _netNick = head $ inNicks ircNet
+        { _nsId = ircNetworkName ircNet
+        , _netNick = head $ ircNetworkNicks ircNet
         -- , _netChannels = inChannels ircNet
-        , _netHost = host
-        , _netPort = port
+        , _netHost = "irc.esper.net" -- TODO
+        , _netPort = PortNumber 6667
         -- Will connect on startup.
         , _netIRCConn = undefined
         , _netRecvAsync = undefined
@@ -92,8 +91,8 @@ startNetCtl ircNet ucAddr = do
 
 -- | Initializes a network controller with the given state.
 initNetCtlActor :: NetCtlState -> ActorM NetCtlActorMsg ()
-initNetCtlActor = evalStateT $ runResourceT $ do
-    liftIO $ putStrLn "Connecting to IRC..."
+initNetCtlActor = evalStateT $ runResourceT $ runStderrLoggingT $ do
+    $(logInfoS) "NetworkController" "Connecting to IRC..."
     -- Connect to IRC.
     host <- use netHost
     port <- use netPort
@@ -101,7 +100,7 @@ initNetCtlActor = evalStateT $ runResourceT $ do
         (connectIRC host port)
         disconnectIRC
     netIRCConn .= conn
-    liftIO $ putStrLn "IRC connection established."
+    $(logInfoS) "NetworkController" "Connected to IRC server. Registering."
 
     -- Start the receiver thread.
     me <- self
@@ -193,8 +192,10 @@ handleLine (IRCLine (Just user) (ICmdQuit) [chan] msgM) = do
     bufferEvent chan $ UserQuit user msgM
 
 
-handleLine line =
-    liftIO $ putStrLn ("Got unknown line: " ++ show line)
+handleLine line = do
+    -- $(logWarnS) "NetworkController"
+    --     ("Got unknown IRC message: " `T.append` (T.pack $ show line))
+    return ()
 
 -- }}}
 

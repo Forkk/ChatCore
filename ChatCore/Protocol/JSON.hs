@@ -73,7 +73,7 @@ connection handle host port = do
          Left ce -> handleCoreEvt handle ce
          Right msgData -> dropMaybeT $ do
              msg <- MaybeT $ parseClientMsgM msgData
-             return $ handleClientMsg msg
+             lift $ handleClientMsg msg
     connection handle host port
   where
     -- Parses the given message from the client.

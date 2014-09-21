@@ -3,10 +3,8 @@ module ChatCore.Types where
 import Control.Applicative
 import Data.Aeson
 import qualified Data.Text as T
-import Network
 
-
-type ChatNetworkId = T.Text
+type ChatNetworkName = T.Text
 
 type ChatBufferId = T.Text
 
@@ -19,15 +17,12 @@ type ChatSource = T.Text
 -- | Type representing a user's nick.
 type Nick = T.Text
 
--- | Type representing a full user identifier.
-type User = T.Text
-
 -- | Type representing an IRC channel.
 type ChatChan = T.Text
 
 
 -- | A string identifying a user.
-type UserId = T.Text
+type UserName = T.Text
 
 
 -- | Identifies the type of a message (i.e. PRIVMSG, NOTICE, etc.)
@@ -41,20 +36,4 @@ instance FromJSON MessageType where
 instance ToJSON MessageType where
     toJSON (MtPrivmsg) = String "PRIVMSG"
     toJSON (MtNotice) = String "NOTICE"
-
-
--- | Data structure which describes an IRC network entry.
-data IRCNetwork = IRCNetwork
-    { inName        :: ChatNetworkId    -- The IRC network's name.
-    , inNicks       :: [Nick]           -- A list of nicks for the user to try. Must not be empty.
-    , inChannels    :: [ChatChan]       -- A list of the channels to join on this network.
-    , inServers     :: [IRCServer]      -- A list of the network's servers.
-    }
-
--- | Data structure which describes an IRC server entry.
-data IRCServer = IRCServer
-    { servName      :: T.Text
-    , servAddress   :: HostName
-    , servPort      :: PortID
-    }
 

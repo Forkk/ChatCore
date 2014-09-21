@@ -21,13 +21,13 @@ import ChatCore.Types
 data ClientCommand
     -- | Send the given message to the given destination.
     = SendMessage
-        { sendMsgNetwork    :: ChatNetworkId    -- ID of the IRC network to send the message on.
+        { sendMsgNetwork    :: ChatNetworkName  -- ID of the IRC network to send the message on.
         , sendMsgDest       :: ChatDest         -- Destination to send the message to.
         , sendMsgContent    :: T.Text           -- Content of the message.
         , sendMsgType       :: MessageType      -- The type of message (PRIVMSG or NOTICE).
         }
-    | JoinChannel ChatNetworkId ChatChan
-    | PartChannel ChatNetworkId ChatChan (Maybe T.Text)
+    | JoinChannel ChatNetworkName ChatChan
+    | PartChannel ChatNetworkName ChatChan (Maybe T.Text)
     deriving (Show)
 
 
@@ -37,7 +37,8 @@ data ClientCommand
 data CoreEvent
     -- | Wrapper for `BufferCoreEvent`s. These are events that relate to a
     -- specific buffer.
-    = BufCoreEvent ChatNetworkId ChatBufferId BufferEvent
+    = BufCoreEvent ChatNetworkName ChatBufferId BufferEvent
+    deriving (Show)
 
 -- | Data structure for core events that relate to a specific buffer.
 -- These events are usually wrapped in the `CoreEvent` object's `BufCoreEvent`
@@ -45,13 +46,13 @@ data CoreEvent
 data BufferEvent
     -- | Represents a new message from the given source.
     = ReceivedMessage
-        { recvMsgSender     :: User             -- The the user who sent the message.
+        { recvMsgSender     :: T.Text           -- The the user who sent the message.
         , recvMsgContent    :: T.Text           -- The content of the message.
         , recvMsgType       :: MessageType      -- The type of message (PRIVMSG or NOTICE).
         }
-    | UserJoin User
-    | UserPart User (Maybe T.Text)
-    | UserQuit User (Maybe T.Text)
+    | UserJoin T.Text
+    | UserPart T.Text (Maybe T.Text)
+    | UserQuit T.Text (Maybe T.Text)
     deriving (Show, Eq)
 
 -- {{{ Buffer Event to JSON

@@ -87,7 +87,7 @@ authentication.
 
 \begin{code}
 
-type PendingConn = CoreCtlHandle -> IO (UserId, RemoteClient ())
+type PendingConn = CoreCtlHandle -> IO (UserName, RemoteClient ())
 
 \end{code}
 
