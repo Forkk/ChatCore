@@ -112,15 +112,15 @@ clientCmdFromJSON :: Value -> Parser ClientCommand
 clientCmdFromJSON (Object obj) = do
     cmdType <- obj .: "command"
     case cmdType :: T.Text of
-            "sendmsg" -> SendMessage
+            "send-msg" -> SendMessage
                 <$> obj .:   "network"
                 <*> obj .:   "dest"
                 <*> obj .:   "message"
                 <*> obj .:?  "msgtype" .!= MtPrivmsg
-            "joinchan" -> JoinChannel
+            "join-chan" -> JoinChannel
                 <$> obj .:   "network"
                 <*> obj .:   "channel"
-            "partchan" -> PartChannel
+            "part-chan" -> PartChannel
                 <$> obj .:   "network"
                 <*> obj .:   "channel"
                 <*> obj .:?  "message"
@@ -140,6 +140,9 @@ coreEvtToJSON (BufCoreEvent chatNet chatBuf evt) = object $
     [ "network"     .= chatNet
     , "buffer"      .= chatBuf
     ] ++ bufEvtPairs evt
+coreEvtToJSON (NetCoreEvent chatNet evt) = object $
+    [ "network"     .= chatNet
+    ] ++ netEvtPairs evt
 
 -- }}}
 

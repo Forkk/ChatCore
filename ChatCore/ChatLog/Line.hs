@@ -14,16 +14,16 @@ import qualified Data.ByteString as B
 import Data.Maybe
 import Data.Monoid
 import qualified Data.Text as T
-import qualified Data.Text.Lazy as TL
+import qualified Data.Text.Lazy as TL hiding (singleton)
 import qualified Data.Text.Lazy.Builder as TL
 import Data.Time
 import Text.Parsec
+import Text.Parsec.Text ()
 import System.Locale
 
 import ChatCore.Events
 import ChatCore.Types
-
-type BufferId = T.Text
+import ChatCore.IRC
 
 -- | Represents an event in the chat log.
 data LogEvent
@@ -48,32 +48,36 @@ data LogLine = LogLine
 
 -- | Gets log line info (metadata and content) for the given buffer event.
 bufEvtInfo :: BufferEvent -> ([T.Text], Maybe T.Text)
-bufEvtInfo (ReceivedMessage sender content mtype) =
-    (["recvmsg", sender, mtypeStr mtype], Just content)
+bufEvtInfo (ReceivedMessage user content mtype) =
+    (["message", userToStr user, mtypeStr mtype], Just content)
   where
     mtypeStr MtPrivmsg = "PRIVMSG"
     mtypeStr MtNotice = "NOTICE"
 
-bufEvtInfo (UserJoin user) = (["join", user], Nothing)
-bufEvtInfo (UserPart user msgM) = (["part", user], msgM)
-bufEvtInfo (UserQuit user msgM) = (["quit", user], msgM)
+bufEvtInfo (StatusMessage sender content) =
+    (["status", sender], Just content)
+
+bufEvtInfo (UserJoin user) = (["join", userToStr user], Nothing)
+bufEvtInfo (UserPart user msgM) = (["part", userToStr user], msgM)
+bufEvtInfo (UserQuit user msgM) = (["quit", userToStr user], msgM)
+bufEvtInfo (OtherNickChange user newNick) = (["other-nick", userToStr user, newNick], Nothing)
 
 
 -- | Reads a log event from the given metadata and content.
 logEvtFromInfo :: [T.Text] -> Maybe T.Text -> Maybe LogEvent
 
 -- Message
-logEvtFromInfo ["recvmsg", sender, mtypeStr] (Just msg) =
-    LogBufEvent <$> ReceivedMessage sender msg <$> mtype mtypeStr
+logEvtFromInfo ["recvmsg", user, mtypeStr] (Just msg) =
+    LogBufEvent <$> ReceivedMessage (parseUserStr user) msg <$> mtype mtypeStr
   where
     mtype "PRIVMSG" = Just MtPrivmsg
     mtype "NOTICE" = Just MtNotice
     mtype _ = Nothing
 
 -- Join, Part, Quit
-logEvtFromInfo ["join", user] Nothing = Just $ LogBufEvent $ UserJoin user
-logEvtFromInfo ["part", user] msgM = Just $ LogBufEvent $ UserPart user msgM
-logEvtFromInfo ["quit", user] msgM = Just $ LogBufEvent $ UserQuit user msgM
+logEvtFromInfo ["join", user] Nothing = Just $ LogBufEvent $ UserJoin (parseUserStr user)
+logEvtFromInfo ["part", user] msgM = Just $ LogBufEvent $ UserPart (parseUserStr user) msgM
+logEvtFromInfo ["quit", user] msgM = Just $ LogBufEvent $ UserQuit (parseUserStr user) msgM
 
 logEvtFromInfo _ _ = Nothing
 
@@ -106,6 +110,12 @@ logLineBuilder time meta contentM =
         <> TL.fromText content
     contentBuilder Nothing = mempty
 
+
+-- FIXME: This is probably not very fast.
+userToStr :: IRCUser -> T.Text
+userToStr (IRCUser nick ident host) =
+    nick <> T.singleton '!' <> ident <> T.singleton '@' <> host
+
 -- }}}
 
 -- {{{ Crazy parsing nonsense
@@ -137,6 +147,22 @@ parseLogLine bufId line = fromInfo =<< infoM
         char ':'
         char ' '
         T.pack <$> many anyChar
+
+-- | Parses a nick!ident@host string. Ignores parse failures.
+parseUserStr :: T.Text -> IRCUser
+parseUserStr str =
+    maybe defVal id $ hush $ parse parser "IRC User String" str
+  where
+    -- If we fail to parse, just give up and try to get the user's nick or
+    -- something.
+    defVal = IRCUser (T.takeWhile (/= '!') str) "" ""
+    parser = do
+        nick <- T.pack <$> manyTill anyChar (char '!')
+        char '!'
+        ident <- T.pack <$> manyTill anyChar (char '@')
+        char '@'
+        host <- T.pack <$> many anyChar
+        return $ IRCUser nick ident host
 
 -- }}}
 

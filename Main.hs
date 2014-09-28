@@ -12,7 +12,7 @@ main = runStderrLoggingT $ withSqlitePool ":memory:" 5 $ \pool -> do
     (flip runSqlPool $ pool) $ do
         runMigration migrateAll
         user <- insert $ ChatUser "Forkk"
-        network <- insert $ IrcNetwork "EsperNet" ["ChatCore"] [] user
+        insert $ IrcNetwork "EsperNet" ["ChatCore"] [] user
         return ()
     runCoreCtl pool
 

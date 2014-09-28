@@ -6,7 +6,8 @@ import qualified Data.Text as T
 
 type ChatNetworkName = T.Text
 
-type ChatBufferId = T.Text
+type BufferId = T.Text
+
 
 -- | Represents a message destination. This can be either a channel or a user.
 type ChatDest = T.Text

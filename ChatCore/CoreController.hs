@@ -85,7 +85,7 @@ runCoreCtl dbpool = liftIO $
 
 -- | Gets the user list from the database.
 getUserList :: (CoreCtlActor m) => m [UserName]
-getUserList = runDB'CC (map (chatUserName . entityVal) <$> selectList [] [])
+getUserList = runDB'CC getUserNames
 
 
 getConnListeners :: (CoreCtlActor m) => m [ConnListener]

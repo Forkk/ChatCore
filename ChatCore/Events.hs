@@ -8,13 +8,13 @@
 -- situation. Client commands are sent to the chat controller.
 module ChatCore.Events where
 
-import Control.Applicative
 import Data.Aeson
 import Data.Aeson.Types
 import Data.Maybe
 import qualified Data.Text as T
 
 import ChatCore.Types
+import ChatCore.IRC
 
 -- | Data structure representing a Chat Core client command.
 --   A client command represents a message or request from a client.
@@ -37,57 +37,108 @@ data ClientCommand
 data CoreEvent
     -- | Wrapper for `BufferCoreEvent`s. These are events that relate to a
     -- specific buffer.
-    = BufCoreEvent ChatNetworkName ChatBufferId BufferEvent
+    = BufCoreEvent ChatNetworkName BufferId BufferEvent
+    | NetCoreEvent ChatNetworkName NetworkEvent
     deriving (Show)
 
 -- | Data structure for core events that relate to a specific buffer.
 -- These events are usually wrapped in the `CoreEvent` object's `BufCoreEvent`
 -- constructor.
 data BufferEvent
+    -- | Represents a status message from either Chat Core or the IRC server.
+    = StatusMessage
+        { statusMsgSender   :: T.Text           -- What sent the message?
+        , statusMsgContent  :: T.Text           -- The content of the message.
+        }
     -- | Represents a new message from the given source.
-    = ReceivedMessage
-        { recvMsgSender     :: T.Text           -- The the user who sent the message.
+    | ReceivedMessage
+        { recvMsgSender     :: IRCUser          -- The the user who sent the message.
         , recvMsgContent    :: T.Text           -- The content of the message.
         , recvMsgType       :: MessageType      -- The type of message (PRIVMSG or NOTICE).
         }
-    | UserJoin T.Text
-    | UserPart T.Text (Maybe T.Text)
-    | UserQuit T.Text (Maybe T.Text)
+    | UserJoin IRCUser
+    | UserPart IRCUser (Maybe T.Text)
+    | UserQuit IRCUser (Maybe T.Text)
+
+    -- | An event occurring when another user's nick changes.
+    | OtherNickChange IRCUser T.Text
     deriving (Show, Eq)
 
--- {{{ Buffer Event to JSON
+
+-- | Data structure for core events that relate to a specific network. Things
+-- like another user disconnecting or changing their nick are buffer events
+-- instead since that is how they are logged. Network events are for things
+-- such as the user's nick changing, or the user losing connection.
+data NetworkEvent
+    -- | An event occurring when the user connects to the network.
+    = NetConnect
+    -- | An event occurring when the user disconnects from the network.
+    | NetDisconnect
+    -- | An event occurring when the current user's nick changes.
+    | UserNickChange IRCUser T.Text
+    deriving (Show, Eq)
+
+
+-- {{{ Event to JSON
 
 instance ToJSON BufferEvent where
     toJSON = object . bufEvtPairs
 
 bufEvtPairs :: BufferEvent -> [Pair]
 bufEvtPairs evt@(ReceivedMessage {}) =
-    [ "event"       .= ("recvmsg" :: T.Text)
-    , "sender"      .= recvMsgSender evt
+    [ "event"       .= ("message" :: T.Text)
+    , "sender"      .= (_iuNick $ recvMsgSender evt)
     , "message"     .= recvMsgContent evt
     , "msgtype"     .= recvMsgType evt
     ]
+bufEvtPairs evt@(StatusMessage _ _) =
+    [ "event"   .= ("status" :: T.Text)
+    , "user"    .= (statusMsgSender evt)
+    , "message" .= (statusMsgContent evt)
+    ]
+
 bufEvtPairs (UserJoin user) =
-    [ "event" .= ("join" :: T.Text)
-    , "user"  .= user
+    [ "event"   .= ("join" :: T.Text)
+    , "user"    .= (_iuNick user)
     ]
 bufEvtPairs (UserPart user msgM) =
     [ "event"   .= ("part" :: T.Text)
-    , "user"    .= user
+    , "user"    .= (_iuNick user)
     ] ++ if isJust msgM
             then ["message" .= fromJust msgM]
             else []
 bufEvtPairs (UserQuit user msgM) =
-    [ "event" .= ("quit" :: T.Text)
-    , "user"  .= user
+    [ "event"   .= ("quit" :: T.Text)
+    , "user"    .= (_iuNick user)
     ] ++ if isJust msgM
             then ["message" .= fromJust msgM]
             else []
+
+bufEvtPairs (OtherNickChange user newNick) =
+    [ "event"   .= ("other-nick" :: T.Text)
+    , "user"    .= (_iuNick user)
+    , "new-nick".= newNick
+    ]
+
+
+netEvtPairs :: NetworkEvent -> [Pair]
+netEvtPairs (NetConnect) =
+    [ "event"   .= ("connected" :: T.Text)
+    ]
+netEvtPairs (NetDisconnect) =
+    [ "event"   .= ("disconnected" :: T.Text)
+    ]
+netEvtPairs (UserNickChange user newNick) =
+    [ "event"   .= ("nick-change" :: T.Text)
+    , "old-nick".= (_iuNick user)
+    , "new-nick".= newNick
+    ]
 
 -- }}}
 
 -- {{{ JSON to Events
 
+{-
 instance FromJSON BufferEvent where
     parseJSON (Object obj) = do
         evtType <- obj .: "event"
@@ -101,6 +152,7 @@ instance FromJSON BufferEvent where
              "quit" -> UserQuit <$> obj .: "user" <*> obj .: "messsage"
              _ -> empty
     parseJSON _ = empty
+-}
 
 -- }}}
 

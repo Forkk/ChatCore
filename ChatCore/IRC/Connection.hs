@@ -14,6 +14,7 @@ module ChatCore.IRC.Connection
     ) where
 
 import Control.Applicative
+import Control.Monad.Logger
 import Control.Monad.Reader
 import Control.Error.Util
 import qualified Data.ByteString as B
@@ -21,14 +22,18 @@ import qualified Data.ByteString.Char8 as BC
 import Data.Conduit
 import qualified Data.Conduit.Binary as CB
 import qualified Data.Conduit.List as CL
+import Data.Monoid
+import qualified Data.Text as T
 import Network
 import System.IO
+import Text.Parsec
 
 import ChatCore.IRC.Commands
 import ChatCore.IRC.Line
 
 
-type MonadIRCSuper m = (Functor m, Applicative m, Monad m, MonadIO m)
+type MonadIRCSuper m =
+    (Functor m, Applicative m, Monad m, MonadIO m, MonadLogger m)
 
 -- | Class for monads that can run IRC actions.
 class (MonadIRCSuper m) => MonadIRC m where
@@ -89,5 +94,11 @@ sourceRecvLine = do
     -- Read lines from the handle and parse them.
     return $ CB.sourceHandle hand
           $= CB.lines $= CL.map removeCr
-          $= CL.map parseLine $= CL.mapMaybe hush
+          $= CL.map parseLine
+          $= CL.mapMaybeM (either
+                (\e -> ircParseError e >> return Nothing) (return . Just))
+
+ircParseError :: ParseError -> IO ()
+ircParseError e = runStderrLoggingT $ do
+    $(logWarnS) "IRC" ("Failed to parse IRC message: " <> (T.pack $ show e))
 

@@ -22,6 +22,7 @@ import Control.Monad.Trans.Maybe
 import Data.Default
 import qualified Data.Map as M
 import Data.Maybe
+import Data.Monoid
 import qualified Data.Text as T
 import Database.Persist
 import Database.Persist.Sql
@@ -39,7 +40,8 @@ import ChatCore.NetworkController
 data UserCtlState = UserCtlState
     { _usNetCtls    :: M.Map ChatNetworkName NetCtlHandle -- Network controller handles for the user's networks.
     , _usClients    :: [RemoteClientHandle] -- The clients connected to this user.
-    , _usUserName   :: UserName
+    , _usUserName   :: UserName -- The user's string name.
+    -- , _usUserId     :: ChatUserId -- The user's ID in the database.
     , _usCoreCtl    :: CoreCtlHandle
     , _usConnPool   :: ConnectionPool
     }
@@ -165,15 +167,14 @@ userController = do
     case msg of
          UserCtlClientCommand ccmd -> do
              $(logDebugS) "UserController"
-                 ("Got client command: " `T.append` (T.pack $ show ccmd))
+                 ("Got client command: " <> (T.pack $ show ccmd))
              handleClientCommand ccmd
          UserCtlCoreEvent evt -> do
              $(logDebugS) "UserController"
-                 ("Got core event: " `T.append` (T.pack $ show evt))
+                 ("Got core event: " <> (T.pack $ show evt))
              handleCoreEvent evt
          UserCtlNewClient rc -> handleNewClient rc
     userController
-
 
 -- }}}
 
