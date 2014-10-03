@@ -29,6 +29,7 @@ import System.Directory
 import System.FilePath
 import System.IO.Unsafe
 
+import ChatCore.Types
 import ChatCore.ChatLog.Line
 import ChatCore.ChatLog.File
 
@@ -85,7 +86,7 @@ ensureExists dir = do
 -- {{{ Read
 
 -- | Reads a list of lines from the given buffer starting at the given time.
-readLog :: ChatLog -> BufferId -> UTCTime -> IO [LogLine]
+readLog :: ChatLog -> BufferName -> UTCTime -> IO [LogLine]
 readLog chatLog bufId startTime = do
     -- Get a list of log files in the given buffer and sort them by date.
     logIds <- sort <$> filter fileBeforeStart <$> logFilesInDir bufDir
@@ -107,7 +108,7 @@ readLog chatLog bufId startTime = do
         seq logLines $ return logLines
 
 -- | Reads the given log file in the given buffer in the given chat log.
-readLogFile :: ChatLog -> BufferId -> LogFileId -> IO [LogLine]
+readLogFile :: ChatLog -> BufferName -> LogFileId -> IO [LogLine]
 readLogFile chatLog buf fid =
     mapMaybe (parseLogLine buf) <$> reverse <$> B8.lines <$> B.readFile logPath
   where

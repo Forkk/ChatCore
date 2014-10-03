@@ -13,22 +13,26 @@ import Control.Concurrent.Actor
 import Control.Concurrent.Async
 import Control.Lens
 import Control.Monad.Logger
+import Control.Monad.Reader
 import Control.Monad.State
 import Control.Monad.Trans.Resource
+import Data.Acid
 import Data.Conduit
 import qualified Data.Conduit.List as CL
+import qualified Data.IxSet as I
 import qualified Data.Map as M
 import Data.Maybe
 import Data.Monoid
 import qualified Data.Text as T
 import Data.Time
 import Network
+import Safe
 import System.FilePath
 
 import ChatCore.ChatLog
-import ChatCore.Database
 import ChatCore.Events
 import ChatCore.IRC
+import ChatCore.State
 import ChatCore.Types
 import ChatCore.Util
 import {-# SOURCE #-} ChatCore.UserController
@@ -60,9 +64,10 @@ blankNetBufState = NetBufState [] False
 -- | Data structure which stores the state of a chat session on a network.
 data NetCtlState = NetCtlState
     { _nsId             :: ChatNetworkName  -- The ID name of this network.
+    , _netUserName      :: UserName         -- Username of the user who owns this network.
     , _netNick          :: Nick             -- The user's current nick.
     , _netNicks         :: [Nick]           -- Other nicks that can be used.
-    , _netBuffers       :: M.Map BufferId NetBufState -- Map of buffers the user is in.
+    , _netBuffers       :: M.Map BufferName NetBufState -- Map of buffers the user is in.
     , _netHost          :: HostName
     , _netPort          :: PortID
     , _netIRCConn       :: IRCConnection
@@ -77,10 +82,18 @@ type NetCtlActor m =
     ( MonadActor NetCtlActorMsg m
     , MonadState NetCtlState m
     , MonadResource m, MonadIRC m
-    , MonadLogger m)
+    , MonadLogger m
+    , MonadReader (AcidState ChatCoreState) m)
 
 instance (NetCtlActor m) => MonadIRC m where
     ircConn = use netIRCConn
+
+
+instance HasChatCoreUser NetCtlState where
+    getCurrentUserName = view netUserName
+
+instance HasChatCoreNetwork NetCtlState where
+    getCurrentNetworkName = view nsId
 
 -- }}}
 
@@ -95,24 +108,34 @@ instance ActorMessage NetCtlActorMsg
 
 type NetCtlHandle = ActorHandle NetCtlActorMsg
 
-startNetCtl :: IrcNetwork -> UserCtlHandle -> IO NetCtlHandle
-startNetCtl ircNet ucAddr = do
+-- | Starts a network controller for the given network.
+-- Throws an exception if the network doesn't exist.
+startNetCtl :: (Functor m, MonadIO m, HasAcidState m ChatCoreState) =>
+    UserName -> ChatNetworkName -> UserCtlHandle -> m NetCtlHandle
+startNetCtl uName netName ucAddr = do
+    acid <- getAcidState
+    -- Find the network with the given name.
+    net <- fromJust <$> (queryM $ GetUserNetwork uName netName)
     -- Open the chat log for this network.
-    chatLog <- mkChatLog ("log" </> (T.unpack $ ircNetworkName ircNet))
-    hand <- spawnActor $ initNetCtlActor $ NetCtlState
-        { _nsId = ircNetworkName ircNet
-        , _netNicks = ircNetworkNicks ircNet
-        , _netNick = undefined
-        , _netBuffers = M.empty
-        -- , _netChannels = inChannels ircNet
-        , _netHost = "chaos.esper.net" -- TODO
-        , _netPort = PortNumber 6667
-        -- Will connect on startup.
-        , _netIRCConn = undefined
-        , _netRecvAsync = undefined
-        , _userCtlAddr = ucAddr
-        , _netChatLog = chatLog
-        }
+    chatLog <- liftIO $ mkChatLog ("log" </> (T.unpack (net ^. networkName)))
+    -- Start the network controller.
+    hand <- liftIO $
+        spawnActor $
+        (flip runReaderT) acid $
+        initNetCtlActor $ NetCtlState
+            { _nsId = net ^. networkName
+            , _netUserName = uName
+            , _netNicks = net ^. networkNicks
+            , _netNick = undefined
+            , _netBuffers = M.empty
+            -- Will connect on startup.
+            , _netHost = undefined
+            , _netPort = undefined
+            , _netIRCConn = undefined
+            , _netRecvAsync = undefined
+            , _netChatLog = chatLog
+            , _userCtlAddr = ucAddr
+            }
     return hand
 
 -- }}}
@@ -120,11 +143,15 @@ startNetCtl ircNet ucAddr = do
 -- {{{ Main functions
 
 -- | Initializes a network controller with the given state.
-initNetCtlActor :: NetCtlState -> ActorM NetCtlActorMsg ()
+initNetCtlActor :: NetCtlState -> ReaderT (AcidState ChatCoreState) (ActorM NetCtlActorMsg) ()
 initNetCtlActor = evalStateT $ runResourceT $ runStderrLoggingT $ do
-    -- Connect to IRC.
-    host <- use netHost
-    port <- use netPort
+    -- Look up a list of servers to try.
+    servers <- getServerList
+    let server = headNote ("Network has no servers.") servers
+        host = T.unpack (server ^. serverHost)
+        port = PortNumber $ fromIntegral (server ^. serverPort)
+    netHost .= host
+    netPort .= port
     $(logInfoS) "NetCtl" ("Connecting to IRC: "
                           <> tshow host <> " " <> tshow port)
     (_, conn) <- allocate
@@ -164,6 +191,24 @@ networkController = do
 
 -- {{{ Utility functions
 
+-- {{{ Database Functions
+
+getServerList :: (NetCtlActor m) => m [ChatCoreNetServer]
+getServerList = viewNetwork networkServers
+
+-- | Gets a list of channels to join after connecting to IRC.
+getInitialChans :: (NetCtlActor m) => m [T.Text]
+getInitialChans =
+        map (view ccBufferName)
+    <$> filter isActiveChannel
+    <$> I.toList
+    <$> viewNetwork networkBuffers
+  where
+    isActiveChannel (ChatCoreChannelBuffer _ True) = True
+    isActiveChannel _ = False
+
+-- }}}
+
 -- {{{ Sending and Logging Events
 
 -- | Sends the given core event to the user controller.
@@ -173,7 +218,7 @@ ncSendCoreEvent evt = do
     ucSendCoreEvt uc evt
 
 -- | Logs the given event.
-logEvent :: (NetCtlActor m) => BufferId -> LogEvent -> m ()
+logEvent :: (NetCtlActor m) => BufferName -> LogEvent -> m ()
 logEvent buf evt = do
     time <- liftIO getCurrentTime
     chatLog <- use netChatLog
@@ -198,7 +243,7 @@ logMsgForReply args' bodyM = do
 
 -- {{{ Debugging Stuff
 
-getUserList :: (NetCtlActor m) => BufferId -> m [Nick]
+getUserList :: (NetCtlActor m) => BufferName -> m [Nick]
 getUserList buf = do
     map (^. buNick) <$> use (netBuffer buf . bufUsers)
 
@@ -207,14 +252,13 @@ getUserList buf = do
 -- {{{ Utility Lenses and other functions for getting information.
 
 -- | A lens pointing to the state variable for the buffer with the given name.
-netBuffer :: BufferId -> Traversal' NetCtlState NetBufState
+netBuffer :: BufferName -> Traversal' NetCtlState NetBufState
 netBuffer name = netBuffers . ix name
-
 
 -- | Maps the given function over all of the network buffers which satisfy the
 -- given predicate.
 forBufsWhere :: (NetCtlActor m) =>
-    (NetBufState -> Bool) -> (BufferId -> NetBufState -> m NetBufState) -> m ()
+    (NetBufState -> Bool) -> (BufferName -> NetBufState -> m NetBufState) -> m ()
 forBufsWhere predicate action = do
     bufs <- use netBuffers
     newBufs <- iforM bufs $ \key buf ->
@@ -228,19 +272,6 @@ forBufsWhere predicate action = do
 hasUser :: Nick -> NetBufState -> Bool
 hasUser nick (NetBufState { _bufUsers = users }) =
     elemOf (each . buNick) nick users
-
--- | An indexed traversal over all of the network buffers which contain the
--- given nick.
--- This can break some lens laws if you use it to modify state. Use with care.
--- userBuffers :: Nick -> IndexedTraversal' BufferId NetCtlState NetBufState
--- userBuffers nick = netBuffers . itraversed . filtered (hasUser nick)
-
-
--- | Gets a list of channels to join after connecting to IRC.
-getInitialChans :: (NetCtlActor m) => m [T.Text] 
-getInitialChans = do
-    -- TODO: Look up in the database. For now, just join my bot testing channel.
-    return ["#sporkk"]
 
 -- }}}
 
@@ -276,11 +307,11 @@ handleClientCmd (SendMessage _ dest msg MtNotice) =
 
 -- {{{ Messages
 
-handlePrivmsg :: (NetCtlActor m) => IRCUser -> BufferId -> T.Text -> m ()
+handlePrivmsg :: (NetCtlActor m) => IRCUser -> BufferName -> T.Text -> m ()
 handlePrivmsg user dest msg = do
     bufferEvent dest $ ReceivedMessage user msg MtPrivmsg
 
-handleNotice :: (NetCtlActor m) => IRCUser -> BufferId -> T.Text -> m ()
+handleNotice :: (NetCtlActor m) => IRCUser -> BufferName -> T.Text -> m ()
 handleNotice user dest msg = do
     bufferEvent dest $ ReceivedMessage user msg MtNotice
 
@@ -288,14 +319,14 @@ handleNotice user dest msg = do
 
 -- {{{ Current user join, part, and nick
 
-handleSelfJoin :: (NetCtlActor m) => IRCUser -> BufferId -> m ()
+handleSelfJoin :: (NetCtlActor m) => IRCUser -> BufferName -> m ()
 handleSelfJoin user dest = do
     -- Add the buffer to our buffer list.
     -- TODO: Send an event indicating a buffer was added.
     netBuffers %= (M.insert dest $ blankNetBufState)
     bufferEvent dest $ UserJoin user
 
-handleSelfPart :: (NetCtlActor m) => IRCUser -> BufferId -> Maybe T.Text -> m ()
+handleSelfPart :: (NetCtlActor m) => IRCUser -> BufferName -> Maybe T.Text -> m ()
 handleSelfPart user dest msgM = do
     -- Remove the buffer from our list.
     netBuffers %= sans dest
@@ -310,7 +341,7 @@ handleSelfNickChange user newNick = do
 
 -- {{{ Other user join, part, nick, and quit
 
-handleOtherJoin :: (NetCtlActor m) => IRCUser -> BufferId -> m ()
+handleOtherJoin :: (NetCtlActor m) => IRCUser -> BufferName -> m ()
 handleOtherJoin user dest = do
     -- Add the user to the buffer.
     netBuffer dest . bufUsers <>= [BufferUser (user ^. iuNick) BufUserNormal]
@@ -318,7 +349,7 @@ handleOtherJoin user dest = do
     $(logDebugS) "NetCtl" ("User joined. Users: " <> T.unwords users)
     bufferEvent dest $ UserJoin user
 
-handleOtherPart :: (NetCtlActor m) => IRCUser -> BufferId -> Maybe T.Text -> m ()
+handleOtherPart :: (NetCtlActor m) => IRCUser -> BufferName -> Maybe T.Text -> m ()
 handleOtherPart user dest msgM = do
     -- Remove the user from the buffer.
     netBuffer dest . bufUsers %= filter (\u -> u ^. buNick /= (user ^. iuNick))
@@ -381,7 +412,7 @@ handleWelcome args msgM = do
 -- secret channels. Chat Core currently just ignores this argument.
 -- The third argument is the channel name.
 -- The body is a space separated list of users in the channel.
-handleNamesList :: (NetCtlActor m) => BufferId -> [Nick] -> m ()
+handleNamesList :: (NetCtlActor m) => BufferName -> [Nick] -> m ()
 handleNamesList chan names = do
     $(logDebugS) "NetCtl" ("Names: " <> T.unwords names)
     -- Append the list of names to the buffer's name list.
@@ -406,7 +437,7 @@ handleNamesList chan names = do
 -- RPL_ENDOFNAMES
 -- When the name list ends, reset the bufRecvingNames variable to False and
 -- send out a name list update event.
-handleNamesListEnd :: (NetCtlActor m) => BufferId -> m ()
+handleNamesListEnd :: (NetCtlActor m) => BufferName -> m ()
 handleNamesListEnd chan = do
     $(logDebugS) "NetCtl" "End of name list."
     netBuffer chan . bufReceivingNames .= False
@@ -433,7 +464,7 @@ handleNumeric senderM (_, _, _) args msgM = do
 -- {{{ Handle Buffer Events
 
 -- | Sends a buffer event for the given buffer.
-bufferEvent :: (NetCtlActor m) => BufferId -> BufferEvent -> m ()
+bufferEvent :: (NetCtlActor m) => BufferName -> BufferEvent -> m ()
 bufferEvent bufId evt = do
     netId <- use nsId
     -- Send the event and log it.

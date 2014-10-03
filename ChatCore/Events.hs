@@ -37,7 +37,7 @@ data ClientCommand
 data CoreEvent
     -- | Wrapper for `BufferCoreEvent`s. These are events that relate to a
     -- specific buffer.
-    = BufCoreEvent ChatNetworkName BufferId BufferEvent
+    = BufCoreEvent ChatNetworkName BufferName BufferEvent
     | NetCoreEvent ChatNetworkName NetworkEvent
     deriving (Show)
 

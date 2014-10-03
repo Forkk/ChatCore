@@ -2,8 +2,6 @@ module ChatCore.ChatLog.Line
     ( LogLine (..)
     , LogEvent (..)
 
-    , BufferId
-
     , logLineToStr
     , parseLogLine
     ) where
@@ -32,7 +30,7 @@ data LogEvent
 
 -- | Represents a line in a chat log.
 data LogLine = LogLine
-    { logLineBuffer :: BufferId
+    { logLineBuffer :: BufferName
     , logLineTime   :: UTCTime
     , logLineEvent  :: LogEvent
     } deriving (Show)
@@ -120,7 +118,7 @@ userToStr (IRCUser nick ident host) =
 
 -- {{{ Crazy parsing nonsense
 
-parseLogLine :: BufferId -> B.ByteString -> Maybe LogLine
+parseLogLine :: BufferName -> B.ByteString -> Maybe LogLine
 parseLogLine bufId line = fromInfo =<< infoM
   where
     fromInfo (time, meta, content) =

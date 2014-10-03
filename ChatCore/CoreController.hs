@@ -1,4 +1,3 @@
-{-# LANGUAGE UndecidableInstances, IncoherentInstances #-}
 -- | The core controller is ChatCore's main actor. It keeps track of the user
 -- controllers and the protocol controller.
 module ChatCore.CoreController
@@ -12,30 +11,30 @@ import Control.Concurrent.Actor
 import Control.Concurrent.Async
 import Control.Concurrent.STM
 import Control.Lens
-import Control.Monad.Logger
+import Control.Monad.Reader
 import Control.Monad.State
+import Control.Monad.Logger
 import Control.Monad.Trans.Control
+import Data.Acid
 import Data.Conduit
 import qualified Data.Conduit.List as CL
 import Data.Default
 import qualified Data.Map as M
 import qualified Data.Text as T
-import Database.Persist.Sqlite
 import Network
 
-import ChatCore.Database
 import ChatCore.Protocol
 import ChatCore.Protocol.JSON
+import ChatCore.State
 import ChatCore.Types
 import ChatCore.UserController
 
 -- {{{ State and types
 
 data CoreCtlState = CoreCtlState
-    { _ccUserCtls :: M.Map UserName UserCtlHandle -- User controller handles.
+    { _ccUserCtls :: M.Map UserName UserCtlHandle
     , _ccConnListeners :: [ActorHandle ()]
     , _ccPendingConns :: [Async (UserName, RemoteClient ())]
-    , _ccDatabasePool :: ConnectionPool
     }
 makeLenses ''CoreCtlState
 
@@ -44,7 +43,6 @@ instance Default CoreCtlState where
         { _ccUserCtls = M.empty
         , _ccConnListeners = []
         , _ccPendingConns = []
-        , _ccDatabasePool = undefined
         }
 
 -- | Monad constraint for the core control actor.
@@ -52,12 +50,9 @@ type CoreCtlActor m =
     ( MonadActor CoreActorMsg m
     , MonadState CoreCtlState m
     , MonadBaseControl IO m
-    , MonadLogger m)
-
-runDB'CC :: (CoreCtlActor m) => SqlPersistT m a -> m a
-runDB'CC t = do
-    pool <- use ccDatabasePool
-    runSqlPool t pool
+    , MonadLogger m
+    , MonadReader (AcidState ChatCoreState) m
+    )
 
 -- }}}
 
@@ -73,19 +68,21 @@ type CoreCtlHandle = ActorHandle CoreActorMsg
 -- | Starts a core controller on the current thread with the given database
 -- connection pool.
 -- This does **not** fork to another thread.
-runCoreCtl :: (MonadIO m) => ConnectionPool -> m ()
-runCoreCtl dbpool = liftIO $
-    runActor $
-    runStderrLoggingT $
-    evalStateT initCoreCtlActor $ (ccDatabasePool .~ dbpool) def 
+runCoreCtl :: (MonadIO m, MonadBaseControl IO m) => m ()
+runCoreCtl = withLocalState initialChatCoreState $ \acid -> do
+    liftIO $
+        runActor $
+        runStderrLoggingT $
+        (flip runReaderT) acid $
+        evalStateT initCoreCtlActor $ def
 
 -- }}}
 
 -- {{{ Other Operations
 
 -- | Gets the user list from the database.
-getUserList :: (CoreCtlActor m) => m [UserName]
-getUserList = runDB'CC getUserNames
+getUserList :: (CoreCtlActor m) => m [ChatCoreUser]
+getUserList = queryM GetUsers
 
 
 getConnListeners :: (CoreCtlActor m) => m [ConnListener]
@@ -94,15 +91,14 @@ getConnListeners = return
     ]
 
 
--- | Starts a user controller for the given IRCUser.
-addUserController :: (CoreCtlActor m) => UserName -> m ()
-addUserController userName = do
+-- | Starts a user controller for the given user.
+addUserController :: (CoreCtlActor m) => ChatCoreUser -> m ()
+addUserController (ChatCoreUser { _userName = uName }) = do
     me <- self
-    pool <- use ccDatabasePool
     -- Spawn the user controller and link to it.
-    hand <- liftIO $ startUserCtl userName me pool
+    hand <- startUserCtl uName me
     -- linkActorHandle hand -- TODO: Implement linking in hactor
-    ccUserCtls %= M.insert userName hand
+    ccUserCtls %= M.insert uName hand
 
 
 -- | Starts the given connection listener.
@@ -133,7 +129,12 @@ runConnListener coreCtl cl =
 
 -- | Entry point for the core controller actor.
 -- Initializes the actor, loads the user list, and starts the user controllers.
-initCoreCtlActor :: StateT CoreCtlState (LoggingT (ActorM CoreActorMsg)) ()
+initCoreCtlActor ::
+    -- bleh D:
+    StateT CoreCtlState (
+    ReaderT (AcidState ChatCoreState) (
+    LoggingT (ActorM CoreActorMsg)
+    )) ()
 initCoreCtlActor = do
     -- Start user controllers.
     getUserList >>= mapM_ addUserController

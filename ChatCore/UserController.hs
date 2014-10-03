@@ -1,4 +1,4 @@
-{-# LANGUAGE UndecidableInstances, IncoherentInstances #-}
+{-# LANGUAGE UndecidableInstances #-}
 -- | The user controller contains and manages all of the network controllers
 -- and client connections for a user. It is responsible for routing events
 -- between these objects.
@@ -12,24 +12,21 @@ module ChatCore.UserController
     , ucSendNewClient
     ) where
 
-import Control.Applicative
 import Control.Concurrent.Actor
 import Control.Lens
 import Control.Monad.Logger
 import Control.Monad.State
 import Control.Monad.Trans.Control
 import Control.Monad.Trans.Maybe
+import Control.Monad.Trans.Reader
 import Data.Default
 import qualified Data.Map as M
-import Data.Maybe
 import Data.Monoid
 import qualified Data.Text as T
-import Database.Persist
-import Database.Persist.Sql
 
-import ChatCore.Database
 import ChatCore.Events
 import ChatCore.Protocol
+import ChatCore.State
 import ChatCore.Types
 import ChatCore.Util
 import {-# SOURCE #-} ChatCore.CoreController
@@ -43,7 +40,6 @@ data UserCtlState = UserCtlState
     , _usUserName   :: UserName -- The user's string name.
     -- , _usUserId     :: ChatUserId -- The user's ID in the database.
     , _usCoreCtl    :: CoreCtlHandle
-    , _usConnPool   :: ConnectionPool
     }
 makeLenses ''UserCtlState
 
@@ -55,7 +51,6 @@ instance Default UserCtlState where
         -- not set, the actor should crash anyway.
         , _usUserName = undefined
         , _usCoreCtl = undefined
-        , _usConnPool = undefined
         }
 
 -- | Monad constraint type for the user controller actor.
@@ -63,12 +58,11 @@ type UserCtlActor m =
     ( MonadActor UserCtlActorMsg m
     , MonadState UserCtlState m
     , MonadBaseControl IO m
-    , MonadLogger m)
+    , MonadLogger m
+    , HasAcidState m ChatCoreState)
 
-runDB'UC :: (UserCtlActor m) => SqlPersistT m a -> m a
-runDB'UC t = do
-    pool <- use usConnPool
-    runSqlPool t pool
+instance HasChatCoreUser UserCtlState where
+    getCurrentUserName = view usUserName
 
 -- }}}
 
@@ -84,16 +78,19 @@ type UserCtlHandle = ActorHandle UserCtlActorMsg
 
 
 -- | Starts a user controller for the user ID in the database.
-startUserCtl :: UserName -> CoreCtlHandle -> ConnectionPool -> IO UserCtlHandle
-startUserCtl userName coreHandle pool =
+startUserCtl :: (MonadIO m, HasAcidState m ChatCoreState) =>
+    UserName -> CoreCtlHandle -> m UserCtlHandle
+startUserCtl uName coreHandle = do
+    acid <- getAcidState
     -- TODO: Look up the user in the database and load their information.
-    spawnActor $
-    runStderrLoggingT $
-    evalStateT initUserCtlActor $
-          (usUserName .~ userName)
-        $ (usCoreCtl .~ coreHandle)
-        $ (usConnPool .~ pool)
-        $ def
+    liftIO $
+        spawnActor $
+        runStderrLoggingT $
+        (flip runReaderT) acid $
+        evalStateT initUserCtlActor $
+              (usUserName .~ uName)
+            $ (usCoreCtl .~ coreHandle)
+            $ def
 
 
 -- | Sends the given client command to the given user controller.
@@ -115,23 +112,20 @@ ucSendNewClient uctl rc = send uctl $ UserCtlNewClient rc
 -- | Gets the user's network list from the database.
 -- TODO: Implement database stuff. For now this just returns a hard coded list
 -- for testing.
-getNetworkList :: (UserCtlActor m) => m [IrcNetwork]
-getNetworkList = runDB'UC $ do
-    $(logDebugS) "UserController" "Getting network list."
-    userName <- use usUserName
-    $(logDebugS) "UserController" "Done"
-    -- Crash if the user is nonexistant.
-    user <- fromJust <$> getBy (UniqueUserName userName)
-    map entityVal <$> selectList [IrcNetworkUser ==. entityKey user] []
+getNetworkList :: (UserCtlActor m) => m [ChatCoreNetwork]
+getNetworkList = do
+    uName <- use usUserName
+    queryM $ GetUserNetworks uName
 
 -- | Starts a network controller for the given IRCNetwork.
-addNetController :: (UserCtlActor m) => IrcNetwork -> m ()
+addNetController :: (UserCtlActor m) => ChatCoreNetwork -> m ()
 addNetController net = do
     me <- self
+    uName <- use usUserName
     -- Spawn the network controller and link to it.
-    hand <- liftIO $ startNetCtl net me
+    hand <- startNetCtl uName (net ^. networkName) me
     -- linkActorHandle hand -- TODO: Implement linking in hactor
-    usNetCtls %= M.insert (ircNetworkName net) hand
+    usNetCtls %= M.insert (net ^. networkName) hand
 
 -- | Forwards the given message to the network controller with the given ID.
 -- If there is no such network, this function does nothing.
