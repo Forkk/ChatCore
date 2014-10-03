@@ -140,6 +140,8 @@ withLocalState initialState =
 
 -- {{{ Acid State Events
 
+-- {{{ User Events
+
 -- | Queries a list of users from Acid State.
 getUsers :: Query ChatCoreState [ChatCoreUser]
 getUsers = I.toList <$> _chatCoreUsers <$> ask
@@ -151,18 +153,28 @@ getUser uName = do
     s <- ask
     return $ getOne $ (s ^. chatCoreUsers) @= uName
 
--- | Applies a function to the user with the given username.
-modUser :: UserName -> (ChatCoreUser -> ChatCoreUser) ->
-    Update ChatCoreState ()
-modUser uName func =
+-- | Adds the given network to the given user.
+-- If a network with the same ID exists, it will be replaced.
+addUserNetwork :: ChatCoreNetwork -> UserName -> Update ChatCoreState ()
+addUserNetwork net = updateUserEvt (userNetworks %~ insert net)
+
+-- {{{ Utility Functions
+
+-- | Apply a function to the user with the given name.
+updateUserEvt :: (ChatCoreUser -> ChatCoreUser) -> UserName -> Update ChatCoreState ()
+updateUserEvt func uName =
     chatCoreUsers %= \users ->
         let user = fromJust $ getOne $ (users @= uName)
          in updateIx uName (func user) users
 
+-- }}}
+
+-- }}}
+
+-- {{{ User Network Events
 
 -- | Gets a list of all the given user's networks.
-getUserNetworks :: UserName ->
-    Query ChatCoreState [ChatCoreNetwork]
+getUserNetworks :: UserName -> Query ChatCoreState [ChatCoreNetwork]
 getUserNetworks uName = do
     userM <- getUser uName
     case userM of
@@ -171,19 +183,89 @@ getUserNetworks uName = do
          Nothing -> error "Tried to get network list for nonexistant user."
 
 -- | Gets the network with the given network name and user name.
-getUserNetwork :: UserName -> ChatNetworkName ->
-    Query ChatCoreState (Maybe ChatCoreNetwork)
+getUserNetwork :: UserName -> ChatNetworkName -> Query ChatCoreState (Maybe ChatCoreNetwork)
 getUserNetwork uName netName = runMaybeT $ do
     user <- MaybeT $ getUser uName
     MaybeT $ return $ getOne $ (user ^. userNetworks) @= netName
 
 
+-- | Sets the possible nicks to use on the given network.
+setNetworkNicks :: [Nick] -> UserName -> ChatNetworkName -> Update ChatCoreState ()
+setNetworkNicks nicks =
+    updateNetworkEvt (networkNicks .~ nicks)
+
+-- | Sets the list of servers to connect to on the given network.
+setNetworkServers ::
+    [ChatCoreNetServer] ->
+    UserName -> ChatNetworkName ->
+    Update ChatCoreState ()
+setNetworkServers servers =
+    updateNetworkEvt (networkServers .~ servers)
+
+
+addNetworkBuffer ::
+    ChatCoreBuffer ->
+    UserName -> ChatNetworkName ->
+    Update ChatCoreState ()
+addNetworkBuffer buffer =
+    updateNetworkEvt (networkBuffers %~ insert buffer)
+
+delNetworkBuffer ::
+    BufferName ->
+    UserName -> ChatNetworkName ->
+    Update ChatCoreState ()
+delNetworkBuffer bufName = do
+    updateNetworkEvt (networkBuffers %~ deleteIx bufName)
+
+-- | Sets the given channel buffer's active flag to the given value.
+-- Ignored if the given buffer name is not a channel buffer.
+setChanBufferActive :: BufferName -> Bool ->
+    UserName -> ChatNetworkName -> Update ChatCoreState ()
+setChanBufferActive buffer active = do
+    updateBufferEvt buffer setActive
+  where
+    setActive (ChatCoreChannelBuffer n _) =
+        ChatCoreChannelBuffer n active
+    setActive buf = buf
+
+
+-- {{{ Utility Functions
+
+-- | Apply a function to the network with the given name.
+updateNetworkEvt ::
+    (ChatCoreNetwork -> ChatCoreNetwork) ->
+    UserName -> ChatNetworkName ->
+    Update ChatCoreState ()
+updateNetworkEvt func uName netName = (flip updateUserEvt) uName $
+    userNetworks %~ \nets ->
+        let net = fromJust $ getOne $ (nets @= netName)
+         in updateIx netName (func net) nets
+
+-- | Apply a function to the buffer with the given name.
+updateBufferEvt ::
+    BufferName -> (ChatCoreBuffer -> ChatCoreBuffer) ->
+    UserName -> ChatNetworkName ->
+    Update ChatCoreState ()
+updateBufferEvt bufName func = updateNetworkEvt $
+    networkBuffers %~ \bufs ->
+        let buf = fromJust $ getOne $ (bufs @= bufName)
+         in updateIx bufName (func buf) bufs
+-- }}}
+
+-- }}}
+
 $(makeAcidic ''ChatCoreState
     [ 'getUsers
     , 'getUser
+    , 'addUserNetwork
 
     , 'getUserNetworks
     , 'getUserNetwork
+    , 'setNetworkNicks
+    , 'setNetworkServers
+    , 'addNetworkBuffer
+    , 'delNetworkBuffer
+    , 'setChanBufferActive
     ])
 
 -- }}}
