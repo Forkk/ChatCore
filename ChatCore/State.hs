@@ -89,7 +89,6 @@ $(makeLenses ''ChatCoreState)
 initialChatCoreState :: ChatCoreState
 initialChatCoreState = ChatCoreState { _chatCoreUsers = I.empty }
 
--- Accessing Values
 
 -- | Monad class for things with @AcidState@ handles.
 class (Functor m, Applicative m, Monad m, MonadIO m) => HasAcidState m s where
@@ -281,9 +280,18 @@ class HasChatCoreUser s where
 viewUser :: (HasChatCoreUser s, MonadState s m, HasAcidState m ChatCoreState) =>
     Lens' ChatCoreUser a -> m a
 viewUser l = do
-        uName <- gets getCurrentUserName
-        user <- fromJust <$> (queryM $ GetUser uName)
-        return $ view l $ user
+    uName <- gets getCurrentUserName
+    user <- fromJust <$> (queryM $ GetUser uName)
+    return $ view l $ user
+
+-- | Runs the given event on the current user.
+updateUser ::
+    ( HasChatCoreUser s, MonadState s m
+    , HasAcidState m (EventState event), UpdateEvent event) =>
+    (UserName -> event) -> m (EventResult event)
+updateUser evt = do
+    uName <- gets getCurrentUserName
+    updateM (evt uName)
 
 
 -- | Monad class for contexts which have access to a particular
@@ -299,6 +307,16 @@ viewNetwork l = do
     netName <- gets getCurrentNetworkName
     net <- fromJust <$> (queryM $ GetUserNetwork uName netName)
     return $ view l $ net
+
+-- | Runs the given event on the current network.
+updateNetwork ::
+    ( HasChatCoreUser s, HasChatCoreNetwork s, MonadState s m
+    , HasAcidState m (EventState event), UpdateEvent event) =>
+    (UserName -> ChatNetworkName -> event) -> m (EventResult event)
+updateNetwork evt = do
+    uName <- gets getCurrentUserName
+    netName <- gets getCurrentNetworkName
+    updateM (evt uName netName)
 
 -- }}}
 
