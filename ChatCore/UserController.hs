@@ -59,7 +59,8 @@ type UserCtlActor m =
     , MonadState UserCtlState m
     , MonadBaseControl IO m
     , MonadLogger m
-    , HasAcidState m ChatCoreState)
+    , HasAcidState ChatCoreState m
+    )
 
 instance HasChatCoreUser UserCtlState where
     getCurrentUserName = view usUserName
@@ -78,7 +79,7 @@ type UserCtlHandle = ActorHandle UserCtlActorMsg
 
 
 -- | Starts a user controller for the user ID in the database.
-startUserCtl :: (MonadIO m, HasAcidState m ChatCoreState) =>
+startUserCtl :: (MonadIO m, HasAcidState ChatCoreState m) =>
     UserName -> CoreCtlHandle -> m UserCtlHandle
 startUserCtl uName coreHandle = do
     acid <- getAcidState

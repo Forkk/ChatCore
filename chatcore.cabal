@@ -107,6 +107,7 @@ executable chatcore
     , ConstraintKinds
     , ScopedTypeVariables
     , FunctionalDependencies
+    , StandaloneDeriving
 
   -- Other library packages from which modules are imported.
   build-depends:
@@ -143,6 +144,7 @@ executable chatcore
     , acid-state                    >=0.12  && <0.13
     , safecopy                      >=0.8   && <0.9
     , ixset                         >=1.0   && <1.1
+    , pwstore-fast                  >=2.4   && <2.5
     , lifted-base                   >=0.2   && <0.3
     , hactor                        ==1.2.*
     , template-haskell

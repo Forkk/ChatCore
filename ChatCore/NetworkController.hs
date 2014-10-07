@@ -110,12 +110,12 @@ type NetCtlHandle = ActorHandle NetCtlActorMsg
 
 -- | Starts a network controller for the given network.
 -- Throws an exception if the network doesn't exist.
-startNetCtl :: (Functor m, MonadIO m, HasAcidState m ChatCoreState) =>
+startNetCtl :: (Functor m, MonadIO m, HasAcidState ChatCoreState m) =>
     UserName -> ChatNetworkName -> UserCtlHandle -> m NetCtlHandle
 startNetCtl uName netName ucAddr = do
     acid <- getAcidState
     -- Find the network with the given name.
-    net <- fromJust <$> (queryM $ GetUserNetwork uName netName)
+    net <- fromJust <$> (queryM $ GetUserNetwork netName uName)
     -- Open the chat log for this network.
     chatLog <- liftIO $ mkChatLog ("log" </> (T.unpack (net ^. networkName)))
     -- Start the network controller.

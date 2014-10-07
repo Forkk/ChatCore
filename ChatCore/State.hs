@@ -8,18 +8,22 @@ import Control.Monad.Reader
 import Control.Monad.Trans.Control
 import Control.Monad.Trans.Maybe
 import Control.Lens hiding (Indexable)
+import Crypto.PasswordStore
 import Data.Acid
 import Data.Acid.Advanced (query', update')
+import qualified Data.ByteString as B
 import Data.IxSet
 import qualified Data.IxSet as I
 import Data.Maybe
 import Data.SafeCopy
 import qualified Data.Text as T
+import qualified Data.Text.Encoding as T
 import Data.Typeable
 import Data.Word
 
 import ChatCore.Types
 
+-- {{{ State Data
 
 -- | Holds information about a server within an IRC network.
 data ChatCoreNetServer = ChatCoreNetServer
@@ -66,6 +70,7 @@ instance Indexable ChatCoreNetwork where
 -- | Holds information about a Chat Core user.
 data ChatCoreUser = ChatCoreUser
     { _userName :: T.Text
+    , _userPassword :: B.ByteString
     , _userNetworks :: IxSet ChatCoreNetwork
     }
     deriving (Eq, Ord, Show, Read, Typeable)
@@ -89,21 +94,22 @@ $(makeLenses ''ChatCoreState)
 initialChatCoreState :: ChatCoreState
 initialChatCoreState = ChatCoreState { _chatCoreUsers = I.empty }
 
+-- }}}
 
 -- | Monad class for things with @AcidState@ handles.
-class (Functor m, Applicative m, Monad m, MonadIO m) => HasAcidState m s where
+class (Functor m, Applicative m, Monad m, MonadIO m) => HasAcidState s m where
     getAcidState :: m (AcidState s)
 
 -- {{{ State Access Boilerplate
 
 instance (Applicative m, MonadIO m, MonadReader (AcidState s) m) =>
-         HasAcidState m s where
+         HasAcidState s m where
     getAcidState = ask
 
 
 queryM :: forall event m.
     ( Functor m, MonadIO m
-    , QueryEvent event, HasAcidState m (EventState event)) =>
+    , QueryEvent event, HasAcidState (EventState event) m) =>
     event -> m (EventResult event)
 queryM event = do
     acid <- getAcidState
@@ -112,7 +118,7 @@ queryM event = do
 
 updateM :: forall event m.
     ( Functor m, MonadIO m
-    , UpdateEvent event, HasAcidState m (EventState event)
+    , UpdateEvent event, HasAcidState (EventState event) m
     ) =>
     event -> m (EventResult event)
 updateM event = do
@@ -152,15 +158,28 @@ getUser uName = do
     s <- ask
     return $ getOne $ (s ^. chatCoreUsers) @= uName
 
+
+-- | Adds a new user with the given username and password hash.
+addUser :: UserName -> B.ByteString -> Update ChatCoreState ()
+addUser uName passHash =
+    chatCoreUsers %= (insert $ ChatCoreUser uName passHash I.empty)
+
 -- | Adds the given network to the given user.
 -- If a network with the same ID exists, it will be replaced.
-addUserNetwork :: ChatCoreNetwork -> UserName -> Update ChatCoreState ()
+addUserNetwork :: ChatCoreNetwork ->
+    UserName -> Update ChatCoreState ()
 addUserNetwork net = updateUserEvt (userNetworks %~ insert net)
+
+-- | Sets the user's password to the given password hash.
+setUserPassword :: B.ByteString ->
+    UserName -> Update ChatCoreState ()
+setUserPassword passHash = updateUserEvt (userPassword .~ passHash)
 
 -- {{{ Utility Functions
 
 -- | Apply a function to the user with the given name.
-updateUserEvt :: (ChatCoreUser -> ChatCoreUser) -> UserName -> Update ChatCoreState ()
+updateUserEvt :: (ChatCoreUser -> ChatCoreUser) ->
+    UserName -> Update ChatCoreState ()
 updateUserEvt func uName =
     chatCoreUsers %= \users ->
         let user = fromJust $ getOne $ (users @= uName)
@@ -182,46 +201,40 @@ getUserNetworks uName = do
          Nothing -> error "Tried to get network list for nonexistant user."
 
 -- | Gets the network with the given network name and user name.
-getUserNetwork :: UserName -> ChatNetworkName -> Query ChatCoreState (Maybe ChatCoreNetwork)
-getUserNetwork uName netName = runMaybeT $ do
+getUserNetwork :: ChatNetworkName -> UserName -> Query ChatCoreState (Maybe ChatCoreNetwork)
+getUserNetwork netName uName = runMaybeT $ do
     user <- MaybeT $ getUser uName
     MaybeT $ return $ getOne $ (user ^. userNetworks) @= netName
 
 
 -- | Sets the possible nicks to use on the given network.
-setNetworkNicks :: [Nick] -> UserName -> ChatNetworkName -> Update ChatCoreState ()
+setNetworkNicks :: [Nick] ->
+    ChatNetworkName -> UserName -> Update ChatCoreState ()
 setNetworkNicks nicks =
     updateNetworkEvt (networkNicks .~ nicks)
 
 -- | Sets the list of servers to connect to on the given network.
-setNetworkServers ::
-    [ChatCoreNetServer] ->
-    UserName -> ChatNetworkName ->
-    Update ChatCoreState ()
+setNetworkServers :: [ChatCoreNetServer] ->
+    ChatNetworkName -> UserName -> Update ChatCoreState ()
 setNetworkServers servers =
     updateNetworkEvt (networkServers .~ servers)
 
-
-addNetworkBuffer ::
-    ChatCoreBuffer ->
-    UserName -> ChatNetworkName ->
-    Update ChatCoreState ()
+addNetworkBuffer :: ChatCoreBuffer ->
+    ChatNetworkName -> UserName -> Update ChatCoreState ()
 addNetworkBuffer buffer =
     updateNetworkEvt (networkBuffers %~ insert buffer)
 
-delNetworkBuffer ::
-    BufferName ->
-    UserName -> ChatNetworkName ->
-    Update ChatCoreState ()
+delNetworkBuffer :: BufferName ->
+    ChatNetworkName -> UserName -> Update ChatCoreState ()
 delNetworkBuffer bufName = do
     updateNetworkEvt (networkBuffers %~ deleteIx bufName)
 
 -- | Sets the given channel buffer's active flag to the given value.
 -- Ignored if the given buffer name is not a channel buffer.
-setChanBufferActive :: BufferName -> Bool ->
-    UserName -> ChatNetworkName -> Update ChatCoreState ()
-setChanBufferActive buffer active = do
-    updateBufferEvt buffer setActive
+setChanBufferActive :: Bool ->
+    BufferName -> ChatNetworkName -> UserName -> Update ChatCoreState ()
+setChanBufferActive active = do
+    updateBufferEvt setActive
   where
     setActive (ChatCoreChannelBuffer n _) =
         ChatCoreChannelBuffer n active
@@ -231,24 +244,21 @@ setChanBufferActive buffer active = do
 -- {{{ Utility Functions
 
 -- | Apply a function to the network with the given name.
-updateNetworkEvt ::
-    (ChatCoreNetwork -> ChatCoreNetwork) ->
-    UserName -> ChatNetworkName ->
-    Update ChatCoreState ()
+updateNetworkEvt :: (ChatCoreNetwork -> ChatCoreNetwork) ->
+    ChatNetworkName -> UserName -> Update ChatCoreState ()
 updateNetworkEvt func uName netName = (flip updateUserEvt) uName $
     userNetworks %~ \nets ->
         let net = fromJust $ getOne $ (nets @= netName)
          in updateIx netName (func net) nets
 
 -- | Apply a function to the buffer with the given name.
-updateBufferEvt ::
-    BufferName -> (ChatCoreBuffer -> ChatCoreBuffer) ->
-    UserName -> ChatNetworkName ->
-    Update ChatCoreState ()
-updateBufferEvt bufName func = updateNetworkEvt $
+updateBufferEvt :: (ChatCoreBuffer -> ChatCoreBuffer) ->
+    BufferName -> ChatNetworkName -> UserName -> Update ChatCoreState ()
+updateBufferEvt func bufName = updateNetworkEvt $
     networkBuffers %~ \bufs ->
         let buf = fromJust $ getOne $ (bufs @= bufName)
          in updateIx bufName (func buf) bufs
+
 -- }}}
 
 -- }}}
@@ -256,7 +266,9 @@ updateBufferEvt bufName func = updateNetworkEvt $
 $(makeAcidic ''ChatCoreState
     [ 'getUsers
     , 'getUser
+    , 'addUser
     , 'addUserNetwork
+    , 'setUserPassword
 
     , 'getUserNetworks
     , 'getUserNetwork
@@ -277,7 +289,7 @@ $(makeAcidic ''ChatCoreState
 class HasChatCoreUser s where
     getCurrentUserName :: s -> UserName
 
-viewUser :: (HasChatCoreUser s, MonadState s m, HasAcidState m ChatCoreState) =>
+viewUser :: (HasChatCoreUser s, MonadState s m, HasAcidState ChatCoreState m) =>
     Lens' ChatCoreUser a -> m a
 viewUser l = do
     uName <- gets getCurrentUserName
@@ -287,7 +299,7 @@ viewUser l = do
 -- | Runs the given event on the current user.
 updateUser ::
     ( HasChatCoreUser s, MonadState s m
-    , HasAcidState m (EventState event), UpdateEvent event) =>
+    , HasAcidState (EventState event) m, UpdateEvent event) =>
     (UserName -> event) -> m (EventResult event)
 updateUser evt = do
     uName <- gets getCurrentUserName
@@ -300,7 +312,7 @@ class HasChatCoreUser s => HasChatCoreNetwork s where
     getCurrentNetworkName :: s -> ChatNetworkName
 
 -- | Applies a lens to the current network in a `HasChatCoreNetwork` monad.
-viewNetwork :: (HasChatCoreNetwork s, MonadState s m, HasAcidState m ChatCoreState) =>
+viewNetwork :: (HasChatCoreNetwork s, MonadState s m, HasAcidState ChatCoreState m) =>
     Lens' ChatCoreNetwork a -> m a
 viewNetwork l = do
     uName <- gets getCurrentUserName
@@ -311,12 +323,19 @@ viewNetwork l = do
 -- | Runs the given event on the current network.
 updateNetwork ::
     ( HasChatCoreUser s, HasChatCoreNetwork s, MonadState s m
-    , HasAcidState m (EventState event), UpdateEvent event) =>
-    (UserName -> ChatNetworkName -> event) -> m (EventResult event)
+    , HasAcidState (EventState event) m, UpdateEvent event) =>
+    (ChatNetworkName -> UserName -> event) -> m (EventResult event)
 updateNetwork evt = do
     uName <- gets getCurrentUserName
     netName <- gets getCurrentNetworkName
     updateM (evt uName netName)
 
 -- }}}
+
+-- | Utility function for hashing and setting the given user's password.
+updateUserPassword :: (MonadIO m, HasAcidState ChatCoreState m) =>
+    UserName -> T.Text -> m ()
+updateUserPassword uName password = do
+    passHash <- liftIO $ makePassword (T.encodeUtf8 password) 16
+    updateM $ SetUserPassword passHash uName
 
