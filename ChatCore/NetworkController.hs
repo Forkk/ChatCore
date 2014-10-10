@@ -63,9 +63,7 @@ blankNetBufState = NetBufState [] False
 
 -- | Data structure which stores the state of a chat session on a network.
 data NetCtlState = NetCtlState
-    { _nsId             :: ChatNetworkName  -- The ID name of this network.
-    , _netUserName      :: UserName         -- Username of the user who owns this network.
-    , _netNick          :: Nick             -- The user's current nick.
+    { _netNick          :: Nick             -- The user's current nick.
     , _netNicks         :: [Nick]           -- Other nicks that can be used.
     , _netBuffers       :: M.Map BufferName NetBufState -- Map of buffers the user is in.
     , _netHost          :: HostName
@@ -75,25 +73,40 @@ data NetCtlState = NetCtlState
     , _netChatLog       :: ChatLog          -- The chat log for this network.
     , _netRecvAsync     :: Async ()         -- Async thread for receiving messages.
     }
-makeLenses ''NetCtlState
+$(makeLenses ''NetCtlState)
+
+-- | Data structure holding the static context information used by the network
+-- controller. This is information that doesn't change, such as the network
+-- name, user name, and acid state handle.
+data NetCtlCtx = NetCtlCtx
+    { _ncNetName   :: ChatNetworkName
+    , _ncUserName  :: UserName
+    , _ncAcidState :: AcidState ChatCoreState
+    }
+$(makeLenses ''NetCtlCtx)
+
+instance HasAcidState ChatCoreState NetCtlCtx where
+    acidStateHandle = view ncAcidState
+
+instance HasChatCoreUser NetCtlCtx where
+    currentUserName = view ncUserName
+
+instance HasChatCoreNetwork NetCtlCtx where
+    currentNetworkName = view ncNetName
+
 
 -- | Monad constraint type for the network controller actor.
 type NetCtlActor m =
     ( MonadActor NetCtlActorMsg m
     , MonadState NetCtlState m
+    , MonadReader NetCtlCtx m
     , MonadResource m, MonadIRC m
     , MonadLogger m
-    , MonadReader (AcidState ChatCoreState) m)
+    )
 
 instance (NetCtlActor m) => MonadIRC m where
     ircConn = use netIRCConn
 
-
-instance HasChatCoreUser NetCtlState where
-    getCurrentUserName = view netUserName
-
-instance HasChatCoreNetwork NetCtlState where
-    getCurrentNetworkName = view nsId
 
 -- }}}
 
@@ -110,40 +123,49 @@ type NetCtlHandle = ActorHandle NetCtlActorMsg
 
 -- | Starts a network controller for the given network.
 -- Throws an exception if the network doesn't exist.
-startNetCtl :: (Functor m, MonadIO m, HasAcidState ChatCoreState m) =>
-    UserName -> ChatNetworkName -> UserCtlHandle -> m NetCtlHandle
-startNetCtl uName netName ucAddr = do
-    acid <- getAcidState
-    -- Find the network with the given name.
-    net <- fromJust <$> (queryM $ GetUserNetwork netName uName)
-    -- Open the chat log for this network.
-    chatLog <- liftIO $ mkChatLog ("log" </> (T.unpack (net ^. networkName)))
-    -- Start the network controller.
-    hand <- liftIO $
-        spawnActor $
-        (flip runReaderT) acid $
-        initNetCtlActor $ NetCtlState
-            { _nsId = net ^. networkName
-            , _netUserName = uName
-            , _netNicks = net ^. networkNicks
-            , _netNick = undefined
-            , _netBuffers = M.empty
-            -- Will connect on startup.
-            , _netHost = undefined
-            , _netPort = undefined
-            , _netIRCConn = undefined
-            , _netRecvAsync = undefined
-            , _netChatLog = chatLog
-            , _userCtlAddr = ucAddr
+startNetCtl :: (Applicative m, MonadIO m, MonadCCState m, MonadUserState m) =>
+    ChatNetworkName -> UserCtlHandle -> m NetCtlHandle
+startNetCtl netName ucAddr = do
+    netCtx <- mkNetContext
+    (flip runReaderT) netCtx $ do
+        -- Find the network with the given name.
+        net <- getNetwork
+        -- Open the chat log for this network.
+        chatLog <- liftIO $ mkChatLog ("log" </> (T.unpack (net ^. networkName)))
+        -- Start the network controller.
+        hand <- liftIO $
+            spawnActor $
+            (flip runReaderT) netCtx $
+            initNetCtlActor $ NetCtlState
+                { _netNicks = net ^. networkNicks
+                , _netNick = undefined
+                , _netBuffers = M.empty
+                -- Will connect on startup.
+                , _netHost = undefined
+                , _netPort = undefined
+                , _netIRCConn = undefined
+                , _netRecvAsync = undefined
+                , _netChatLog = chatLog
+                , _userCtlAddr = ucAddr
+                }
+        return hand
+  where
+    mkNetContext :: (MonadCCState m, MonadUserState m) => m NetCtlCtx
+    mkNetContext = do
+        uName <- getUserName
+        acid <- getAcidState
+        return $ NetCtlCtx
+            { _ncNetName = netName
+            , _ncUserName = uName
+            , _ncAcidState = acid
             }
-    return hand
 
 -- }}}
 
 -- {{{ Main functions
 
 -- | Initializes a network controller with the given state.
-initNetCtlActor :: NetCtlState -> ReaderT (AcidState ChatCoreState) (ActorM NetCtlActorMsg) ()
+initNetCtlActor :: NetCtlState -> ReaderT NetCtlCtx (ActorM NetCtlActorMsg) ()
 initNetCtlActor = evalStateT $ runResourceT $ runStderrLoggingT $ do
     -- Look up a list of servers to try.
     servers <- getServerList
@@ -194,7 +216,7 @@ networkController = do
 -- {{{ Database Functions
 
 getServerList :: (NetCtlActor m) => m [ChatCoreNetServer]
-getServerList = viewNetwork networkServers
+getServerList = getNetwork <&> view networkServers
 
 -- | Gets a list of channels to join after connecting to IRC.
 getInitialChans :: (NetCtlActor m) => m [T.Text]
@@ -202,7 +224,8 @@ getInitialChans =
         map (view ccBufferName)
     <$> filter isActiveChannel
     <$> I.toList
-    <$> viewNetwork networkBuffers
+    <$> view networkBuffers
+    <$> getNetwork
   where
     isActiveChannel (ChatCoreChannelBuffer _ True) = True
     isActiveChannel _ = False
@@ -466,7 +489,7 @@ handleNumeric senderM (_, _, _) args msgM = do
 -- | Sends a buffer event for the given buffer.
 bufferEvent :: (NetCtlActor m) => BufferName -> BufferEvent -> m ()
 bufferEvent bufId evt = do
-    netId <- use nsId
+    netId <- view ncNetName
     -- Send the event and log it.
     ncSendCoreEvent $ BufCoreEvent netId bufId evt
     logEvent bufId $ LogBufEvent evt
@@ -479,7 +502,7 @@ bufferEvent bufId evt = do
 -- | Logs the given network event and forwards it to the core controller.
 networkEvent :: (NetCtlActor m) => NetworkEvent -> m ()
 networkEvent evt = do
-    netId <- use nsId
+    netId <- view ncNetName
     -- Send the event and log it to the -net- buffer.
     ncSendCoreEvent $ NetCoreEvent netId evt
 
@@ -491,7 +514,7 @@ statusMessage senderM msg = do
             Just (UserSource user) -> user ^. iuNick
             Just (ServerSource src) -> src
             _ -> "*"
-    bufferEvent "-status-" $ StatusMessage sender msg
+    bufferEvent "_status_" $ StatusMessage sender msg
 
 -- }}}
 

@@ -77,6 +77,7 @@ executable chatcore
     -- Types and Data
     , ChatCore.Events
     , ChatCore.State
+    , ChatCore.State.Internal
     , ChatCore.Types
 
     -- Chat Logs

@@ -80,11 +80,6 @@ runCoreCtl = withLocalState initialChatCoreState $ \acid -> do
 
 -- {{{ Other Operations
 
--- | Gets the user list from the database.
-getUserList :: (CoreCtlActor m) => m [ChatCoreUser]
-getUserList = queryM GetUsers
-
-
 getConnListeners :: (CoreCtlActor m) => m [ConnListener]
 getConnListeners = return
     [ jsonConnListener $ PortNumber 1337
@@ -137,7 +132,7 @@ initCoreCtlActor ::
     )) ()
 initCoreCtlActor = do
     -- Start user controllers.
-    getUserList >>= mapM_ addUserController
+    getUsers >>= mapM_ addUserController
     -- Start connection listeners.
     getConnListeners >>= mapM_ startConnListener
     -- Proceed on to the main loop.

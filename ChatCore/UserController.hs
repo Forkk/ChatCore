@@ -5,6 +5,7 @@
 module ChatCore.UserController
     ( UserCtlHandle
     , UserCtlActorMsg (..)
+    , UserCtlCtx (..)
     , startUserCtl
     -- * Send Messages
     , ucSendClientCmd
@@ -15,10 +16,11 @@ module ChatCore.UserController
 import Control.Concurrent.Actor
 import Control.Lens
 import Control.Monad.Logger
+import Control.Monad.Reader
 import Control.Monad.State
 import Control.Monad.Trans.Control
 import Control.Monad.Trans.Maybe
-import Control.Monad.Trans.Reader
+import Data.Acid
 import Data.Default
 import qualified Data.Map as M
 import Data.Monoid
@@ -37,8 +39,6 @@ import ChatCore.NetworkController
 data UserCtlState = UserCtlState
     { _usNetCtls    :: M.Map ChatNetworkName NetCtlHandle -- Network controller handles for the user's networks.
     , _usClients    :: [RemoteClientHandle] -- The clients connected to this user.
-    , _usUserName   :: UserName -- The user's string name.
-    -- , _usUserId     :: ChatUserId -- The user's ID in the database.
     , _usCoreCtl    :: CoreCtlHandle
     }
 makeLenses ''UserCtlState
@@ -47,23 +47,33 @@ instance Default UserCtlState where
     def = UserCtlState
         { _usNetCtls = M.empty
         , _usClients = []
-        -- The undefined should be OK in this case. If the username is somehow
-        -- not set, the actor should crash anyway.
-        , _usUserName = undefined
         , _usCoreCtl = undefined
         }
+
+-- | Data structure holding the static context information used by the user
+-- controller. This is information that doesn't change, such as user name and
+-- acid state handle.
+data UserCtlCtx = UserCtlCtx
+    { _ucUserName  :: UserName
+    , _ucAcidState :: AcidState ChatCoreState
+    }
+$(makeLenses ''UserCtlCtx)
+
+instance HasAcidState ChatCoreState UserCtlCtx where
+    acidStateHandle = view ucAcidState
+
+instance HasChatCoreUser UserCtlCtx where
+    currentUserName = view ucUserName
+
 
 -- | Monad constraint type for the user controller actor.
 type UserCtlActor m =
     ( MonadActor UserCtlActorMsg m
     , MonadState UserCtlState m
+    , MonadReader UserCtlCtx m
     , MonadBaseControl IO m
     , MonadLogger m
-    , HasAcidState ChatCoreState m
     )
-
-instance HasChatCoreUser UserCtlState where
-    getCurrentUserName = view usUserName
 
 -- }}}
 
@@ -79,19 +89,17 @@ type UserCtlHandle = ActorHandle UserCtlActorMsg
 
 
 -- | Starts a user controller for the user ID in the database.
-startUserCtl :: (MonadIO m, HasAcidState ChatCoreState m) =>
+startUserCtl :: (MonadIO m, MonadCCState m) =>
     UserName -> CoreCtlHandle -> m UserCtlHandle
 startUserCtl uName coreHandle = do
     acid <- getAcidState
+    let context = UserCtlCtx uName acid
     -- TODO: Look up the user in the database and load their information.
     liftIO $
         spawnActor $
         runStderrLoggingT $
-        (flip runReaderT) acid $
-        evalStateT initUserCtlActor $
-              (usUserName .~ uName)
-            $ (usCoreCtl .~ coreHandle)
-            $ def
+        (flip runReaderT) context $
+        evalStateT initUserCtlActor $ (usCoreCtl .~ coreHandle) def
 
 
 -- | Sends the given client command to the given user controller.
@@ -110,21 +118,12 @@ ucSendNewClient uctl rc = send uctl $ UserCtlNewClient rc
 
 -- {{{ Other Operations
 
--- | Gets the user's network list from the database.
--- TODO: Implement database stuff. For now this just returns a hard coded list
--- for testing.
-getNetworkList :: (UserCtlActor m) => m [ChatCoreNetwork]
-getNetworkList = do
-    uName <- use usUserName
-    queryM $ GetUserNetworks uName
-
 -- | Starts a network controller for the given IRCNetwork.
 addNetController :: (UserCtlActor m) => ChatCoreNetwork -> m ()
 addNetController net = do
     me <- self
-    uName <- use usUserName
     -- Spawn the network controller and link to it.
-    hand <- startNetCtl uName (net ^. networkName) me
+    hand <- startNetCtl (net ^. networkName) me
     -- linkActorHandle hand -- TODO: Implement linking in hactor
     usNetCtls %= M.insert (net ^. networkName) hand
 
@@ -149,8 +148,8 @@ forwardClientCmd cnId ccmd = msgToNetwork cnId $ NetCtlClientCmd ccmd
 -- controllers.
 initUserCtlActor :: (UserCtlActor m) => m ()
 initUserCtlActor = do
-    -- Start network actors.
-    getNetworkList >>= mapM_ addNetController
+    -- Start network controllers.
+    getUserNetworks >>= mapM_ addNetController
     -- Proceed on to the main loop.
     userController
 
