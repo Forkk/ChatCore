@@ -24,6 +24,7 @@ module ChatCore.Protocol
     , nextCoreEvent
     , coreEventSrc
     , coreEvtOr
+    , getUserCtl
     -- * Communicating With Clients
     , rcSendCoreEvt
     ) where
@@ -155,6 +156,10 @@ nextCoreEvent = RC $ (fromRCMsg <$> lift receive)
 -- | Conduit source for core events.
 coreEventSrc :: Source RemoteClient CoreEvent
 coreEventSrc = (yield =<< lift nextCoreEvent) >> coreEventSrc
+               
+-- | Gets a handle to the user controller.
+getUserCtl :: RemoteClient UserCtlHandle
+getUserCtl = RC ask
 
 \end{code}
 

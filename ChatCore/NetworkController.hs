@@ -6,11 +6,13 @@ module ChatCore.NetworkController
     ( NetCtlHandle
     , NetCtlActorMsg (..)
     , startNetCtl
+    , ncGetChatLog
     ) where
 
 import Control.Applicative
 import Control.Concurrent.Actor
 import Control.Concurrent.Async
+import Control.Concurrent.MVar
 import Control.Lens
 import Control.Monad.Logger
 import Control.Monad.Reader
@@ -116,6 +118,7 @@ instance (NetCtlActor m) => MonadIRC m where
 data NetCtlActorMsg
     = NetCtlClientCmd   ClientCommand
     | NetCtlIRCLine     IRCLine
+    | NetCtlGetChatLog  (MVar ChatLog)
 
 instance ActorMessage NetCtlActorMsg
 
@@ -158,6 +161,13 @@ startNetCtl netName ucAddr = do
             , _ncUserName = uName
             , _ncAcidState = acid
             }
+
+-- | Gets the given network controller's ChatLog.
+ncGetChatLog :: (Applicative m, MonadIO m) => NetCtlHandle -> m ChatLog
+ncGetChatLog nctl = do
+    retVar <- liftIO newEmptyMVar
+    send nctl $ NetCtlGetChatLog retVar
+    liftIO $ takeMVar retVar
 
 -- }}}
 
@@ -206,6 +216,7 @@ networkController = do
          NetCtlIRCLine line -> do
              $(logDebugS) "NetCtl" ("Got IRC line: " <> tshow line)
              handleIRCEvent line
+         NetCtlGetChatLog mvar -> liftIO . putMVar mvar =<< use netChatLog
     networkController
 
 -- }}}

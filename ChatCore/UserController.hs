@@ -11,9 +11,11 @@ module ChatCore.UserController
     , ucSendClientCmd
     , ucSendCoreEvt
     , ucSendNewClient
+    , ucGetNetCtl
     ) where
 
 import Control.Concurrent.Actor
+import Control.Concurrent.MVar
 import Control.Lens
 import Control.Monad.Logger
 import Control.Monad.Reader
@@ -83,6 +85,7 @@ data UserCtlActorMsg
     = UserCtlCoreEvent CoreEvent
     | UserCtlClientCommand ClientCommand
     | UserCtlNewClient (RemoteClient ())
+    | UserCtlGetNetCtl ChatNetworkName (MVar (Maybe NetCtlHandle))
 instance ActorMessage UserCtlActorMsg
 
 type UserCtlHandle = ActorHandle UserCtlActorMsg
@@ -113,6 +116,14 @@ ucSendCoreEvt uctl evt = send uctl $ UserCtlCoreEvent evt
 -- | Sends the given new client to the given user controller.
 ucSendNewClient :: (MonadIO m) => UserCtlHandle -> RemoteClient () -> m ()
 ucSendNewClient uctl rc = send uctl $ UserCtlNewClient rc
+                          
+-- | Gets a handle to the network controller with the given network ID
+-- in the given user controller.
+ucGetNetCtl :: (MonadIO m) => UserCtlHandle -> ChatNetworkName -> m (Maybe NetCtlHandle)
+ucGetNetCtl uctl ncName = do
+    retVar <- liftIO newEmptyMVar
+    send uctl $ UserCtlGetNetCtl ncName retVar
+    liftIO $ takeMVar retVar
 
 -- }}}
 
@@ -168,6 +179,8 @@ userController = do
                  ("Got core event: " <> T.pack (show evt))
              handleCoreEvent evt
          UserCtlNewClient rc -> handleNewClient rc
+         UserCtlGetNetCtl ncName mvar ->
+             liftIO . putMVar mvar =<< use (usNetCtls . at ncName)
     userController
 
 -- }}}

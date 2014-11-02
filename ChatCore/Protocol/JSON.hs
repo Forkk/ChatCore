@@ -19,6 +19,8 @@ import Data.Maybe
 import qualified Data.Text as T
 import qualified Data.Text.Lazy.IO as TL
 import qualified Data.Text.Lazy.Encoding as TL
+import Data.Time
+import Data.List
 import Network
 import System.IO
 
@@ -27,6 +29,9 @@ import ChatCore.Types
 import ChatCore.Util
 import ChatCore.Protocol
 import ChatCore.IRC
+import ChatCore.ChatLog
+import ChatCore.UserController
+import ChatCore.NetworkController
 
 
 -- | Creates a JSON connection listener listening on the given port.
@@ -75,14 +80,14 @@ connection handle host port = do
          Left ce -> handleCoreEvt handle ce
          Right msgData -> dropMaybeT $ do
              msg <- MaybeT $ parseClientMsgM msgData
-             lift $ handleClientMsg msg
+             lift $ handleClientMsg handle msg
     connection handle host port
   where
     -- Parses the given message from the client.
     parseClientMsgM msgData =
         -- Log the error if the parsing failed. Otherwise, convert the
         -- Either to a Maybe and pass it on.
-        logParseError $ decodeClientCmd msgData
+        logParseError $ decodeClientMsg msgData
     -- If the given argument is a parse error message, log it.
     logParseError (Right cmd) =
         return $ Just cmd
@@ -92,40 +97,84 @@ connection handle host port = do
 
 -- }}}
 
+-- {{{ JSON Protocol Messages
+
+-- | Data type for messages sent by a JSON protocol client.
+data JSONClientMessage
+    -- | Request @n@ many scrollback lines older than the given date.
+    = GetLogLines ChatNetworkName ChatBufferName Integer UTCTime
+    -- | A client command to send to the core.
+    | ChatCoreCmd ClientCommand
+
+-- | Data type for messages sent by the JSON protocol core.
+data JSONCoreMessage
+    -- | Log lines reply.
+    = ChatLogLines ChatNetworkName ChatBufferName [ChatLogLine]
+    | ChatCoreEvent CoreEvent
+
+-- }}}
+
 
 -- | Handles a message from the client.
-handleClientMsg :: ClientCommand -> RemoteClient ()
-handleClientMsg = receivedClientCmd
+handleClientMsg :: Handle -> JSONClientMessage -> RemoteClient ()
+handleClientMsg _ (ChatCoreCmd cmd) = receivedClientCmd cmd
+handleClientMsg handle (GetLogLines netName bufName lineCount startTime) = do
+    uctl <- getUserCtl
+    -- Get the network controller's handle.
+    nctlM <- ucGetNetCtl uctl netName
+    unless (isNothing nctlM) $ do
+        let nctl = fromJust nctlM
+        chatLog <- ncGetChatLog nctl
+        logLines <- genericTake lineCount <$> liftIO (readLog chatLog bufName startTime)
+        -- Send the lines to the user.
+        sendCoreMsg handle $ ChatLogLines netName bufName logLines
 
 -- | Handles a core event.
 handleCoreEvt :: Handle -> CoreEvent -> RemoteClient ()
 handleCoreEvt handle evt =
-    liftIO $ TL.hPutStrLn handle $ TL.decodeUtf8 $ encodeCoreEvt evt
+    sendCoreMsg handle $ ChatCoreEvent evt
+
+
+-- | Sends a JSONCoreMessage.
+sendCoreMsg :: Handle -> JSONCoreMessage -> RemoteClient ()
+sendCoreMsg handle msg =
+    liftIO $ TL.hPutStrLn handle $ TL.decodeUtf8 $ encodeCoreMsg msg
 
 
 -- {{{ JSON
 
 -- {{{ JSON Parsing
 
-decodeClientCmd :: B.ByteString -> Either String ClientCommand
-decodeClientCmd bs = parseEither clientCmdFromJSON =<< eitherDecodeStrict bs
+decodeClientMsg :: B.ByteString -> Either String JSONClientMessage
+decodeClientMsg bs = parseEither clientCmdFromJSON =<< eitherDecodeStrict bs
 
-clientCmdFromJSON :: Value -> Parser ClientCommand
+clientCmdFromJSON :: Value -> Parser JSONClientMessage
 clientCmdFromJSON (Object obj) = do
     cmdType <- obj .: "command"
     case cmdType :: T.Text of
-            "send-msg" -> SendMessage
-                <$> obj .:   "network"
-                <*> obj .:   "dest"
-                <*> obj .:   "message"
-                <*> obj .:?  "msgtype" .!= MtPrivmsg
-            "join-chan" -> JoinChannel
-                <$> obj .:   "network"
-                <*> obj .:   "channel"
-            "part-chan" -> PartChannel
-                <$> obj .:   "network"
-                <*> obj .:   "channel"
-                <*> obj .:?  "message"
+            "send-msg" -> ChatCoreCmd <$>
+                          (SendMessage
+                           <$> obj .:   "network"
+                           <*> obj .:   "dest"
+                           <*> obj .:   "message"
+                           <*> obj .:?  "msgtype" .!= MtPrivmsg
+                          )
+            "join-chan" -> ChatCoreCmd <$>
+                           (JoinChannel
+                            <$> obj .:   "network"
+                            <*> obj .:   "channel"
+                           )
+            "part-chan" -> ChatCoreCmd <$>
+                           (PartChannel
+                            <$> obj .:   "network"
+                            <*> obj .:   "channel"
+                            <*> obj .:?  "message"
+                           )
+            "get-log-lines" -> GetLogLines
+                                 <$> obj .: "network"
+                                 <*> obj .: "buffer"
+                                 <*> obj .: "line-count"
+                                 <*> obj .: "start-time"
             _ -> error "Unknown command type."
 clientCmdFromJSON _ =
     error "Invalid client command message. Must be an object."
@@ -134,16 +183,27 @@ clientCmdFromJSON _ =
 
 -- {{{ JSON Serializing
 
-encodeCoreEvt :: CoreEvent -> BL.ByteString
-encodeCoreEvt = encode . coreEvtToJSON
+encodeCoreMsg :: JSONCoreMessage -> BL.ByteString
+encodeCoreMsg = encode . coreMsgToJSON
 
-coreEvtToJSON :: CoreEvent -> Value
-coreEvtToJSON (ChatBufferEvent chatNet chatBuf evt) = object $
+coreMsgToJSON :: JSONCoreMessage -> Value
+coreMsgToJSON (ChatCoreEvent (ChatBufferEvent chatNet chatBuf evt)) = object $
     [ "network"     .= chatNet
     , "buffer"      .= chatBuf
     ] ++ bufEvtPairs evt
-coreEvtToJSON (ChatNetworkEvent chatNet evt) = object $
+coreMsgToJSON (ChatCoreEvent (ChatNetworkEvent chatNet evt)) = object $
     ("network" .= chatNet) : netEvtPairs evt
+coreMsgToJSON (ChatLogLines chatNet chatBuf logLines) = object
+    [ "network"     .= chatNet
+    , "buffer"      .= chatBuf
+    , "event"       .= ("log-lines" :: T.Text)
+    , "log-lines"   .= map logLineToJSON logLines
+    ]
+
+
+logLineToJSON :: ChatLogLine -> Value
+logLineToJSON (BufLogLine _ lineTime evt) = object $
+    ("time" .= lineTime) : bufEvtPairs evt
 
 -- }}}
 
