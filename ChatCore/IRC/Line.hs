@@ -24,6 +24,7 @@ import Control.Lens
 import Data.Monoid
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as BL
+import Data.SafeCopy
 import qualified Data.Text as T
 import qualified Data.Text.Lazy.Builder as TL
 import qualified Data.Text.Lazy.Encoding as TL
@@ -40,15 +41,17 @@ data IRCUser = IRCUser
     { _iuNick  :: T.Text
     , _iuIdent :: T.Text
     , _iuHost  :: T.Text
-    } deriving (Show, Eq)
-makeLenses ''IRCUser
+    } deriving (Show, Read, Eq)
+$(makeLenses ''IRCUser)
+$(deriveSafeCopy 0 'base ''IRCUser)
 
 -- | Represents the source that a message came from.
 data IRCSource
     = ServerSource T.Text
     | UserSource { _srcUser :: IRCUser }
-    deriving (Show, Eq)
-makeLenses ''IRCSource
+    deriving (Show, Read, Eq)
+$(makeLenses ''IRCSource)
+$(deriveSafeCopy 0 'base ''IRCSource)
 
 -- | Represents a single argument.
 type IRCArgument = T.Text

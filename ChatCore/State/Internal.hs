@@ -50,18 +50,18 @@ $(makeLenses ''ChatCoreNetServer)
 data ChatCoreBuffer
     -- Buffer for an IRC channel.
     = ChatCoreChannelBuffer
-        { _ccBufferName :: BufferName
+        { _ccBufferName :: ChatBufferName
         , _ccBufferActive :: Bool -- ^ Whether or not to join this channel at startup.
         }
     -- Other type of buffer.
     | ChatCoreOtherBuffer
-        { _ccBufferName :: BufferName }
+        { _ccChatBufferName :: ChatBufferName }
     deriving (Eq, Ord, Show, Read, Typeable)
 $(deriveSafeCopy 0 'base ''ChatCoreBuffer)
 $(makeLenses ''ChatCoreBuffer)
 
 instance Indexable ChatCoreBuffer where
-    empty = ixSet [ ixFun ((:[]) . _ccBufferName) ]
+    empty = ixSet [ ixFun ((:[]) . _ccChatBufferName) ]
 
 
 -- | Holds information about an IRC network in Chat Core.
@@ -227,7 +227,7 @@ addNetworkBuffer :: ChatCoreBuffer ->
 addNetworkBuffer buffer =
     updateNetworkEvt (networkBuffers %~ insert buffer)
 
-delNetworkBuffer :: BufferName ->
+delNetworkBuffer :: ChatBufferName ->
     ChatNetworkName -> UserName -> Update ChatCoreState ()
 delNetworkBuffer bufName = do
     updateNetworkEvt (networkBuffers %~ deleteIx bufName)
@@ -235,7 +235,7 @@ delNetworkBuffer bufName = do
 -- | Sets the given channel buffer's active flag to the given value.
 -- Ignored if the given buffer name is not a channel buffer.
 setChanBufferActive :: Bool ->
-    BufferName -> ChatNetworkName -> UserName -> Update ChatCoreState ()
+    ChatBufferName -> ChatNetworkName -> UserName -> Update ChatCoreState ()
 setChanBufferActive active = do
     updateBufferEvt setActive
   where
@@ -256,7 +256,7 @@ updateNetworkEvt func uName netName = (flip updateUserEvt) uName $
 
 -- | Apply a function to the buffer with the given name.
 updateBufferEvt :: (ChatCoreBuffer -> ChatCoreBuffer) ->
-    BufferName -> ChatNetworkName -> UserName -> Update ChatCoreState ()
+    ChatBufferName -> ChatNetworkName -> UserName -> Update ChatCoreState ()
 updateBufferEvt func bufName = updateNetworkEvt $
     networkBuffers %~ \bufs ->
         let buf = fromJust $ getOne $ (bufs @= bufName)

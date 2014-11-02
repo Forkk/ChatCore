@@ -11,7 +11,7 @@ module ChatCore.ChatLog.File
 
     , logFilesInDir
 
-    , LogLine (..)
+    , ChatLogLine (..)
     ) where
 
 import Control.Applicative
@@ -55,7 +55,7 @@ dayForLogFile (LogFileId day month year) = fromGregorian year month day
 
 
 -- | Gets the log file ID that the given line should be written to.
-logFileForLine :: LogLine -> LogFileId
+logFileForLine :: ChatLogLine -> LogFileId
 logFileForLine = logFileForDate . logLineTime
 
 logFileName :: LogFileId -> String
@@ -67,14 +67,14 @@ parseLogFileId idStr = hush $ parse parser "Log File ID" idStr
   where
     parser = do
         year  <- numSize 4
-        char '-'
+        _ <- char '-'
         month <- numSize 2
-        char '-'
+        _ <- char '-'
         day   <- numSize 2
-        string ".log"
+        _ <- string ".log"
         return $ LogFileId day month year
     -- Read n many digits and parse them as an integer.
-    numSize n = read <$> (count n $ digit)
+    numSize n = read <$> count n digit
 
 -- }}}
 

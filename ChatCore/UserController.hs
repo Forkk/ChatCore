@@ -98,7 +98,7 @@ startUserCtl uName coreHandle = do
     liftIO $
         spawnActor $
         runStderrLoggingT $
-        (flip runReaderT) context $
+        flip runReaderT context $
         evalStateT initUserCtlActor $ (usCoreCtl .~ coreHandle) def
 
 
@@ -161,11 +161,11 @@ userController = do
     case msg of
          UserCtlClientCommand ccmd -> do
              $(logDebugS) "UserController"
-                 ("Got client command: " <> (T.pack $ show ccmd))
+                 ("Got client command: " <> T.pack (show ccmd))
              handleClientCommand ccmd
          UserCtlCoreEvent evt -> do
              $(logDebugS) "UserController"
-                 ("Got core event: " <> (T.pack $ show evt))
+                 ("Got core event: " <> T.pack (show evt))
              handleCoreEvent evt
          UserCtlNewClient rc -> handleNewClient rc
     userController

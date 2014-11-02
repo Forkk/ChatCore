@@ -65,7 +65,7 @@ blankNetBufState = NetBufState [] False
 data NetCtlState = NetCtlState
     { _netNick          :: Nick             -- The user's current nick.
     , _netNicks         :: [Nick]           -- Other nicks that can be used.
-    , _netBuffers       :: M.Map BufferName NetBufState -- Map of buffers the user is in.
+    , _netBuffers       :: M.Map ChatBufferName NetBufState -- Map of buffers the user is in.
     , _netHost          :: HostName
     , _netPort          :: PortID
     , _netIRCConn       :: IRCConnection
@@ -127,16 +127,16 @@ startNetCtl :: (Applicative m, MonadIO m, MonadCCState m, MonadUserState m) =>
     ChatNetworkName -> UserCtlHandle -> m NetCtlHandle
 startNetCtl netName ucAddr = do
     netCtx <- mkNetContext
-    (flip runReaderT) netCtx $ do
+    flip runReaderT netCtx $ do
         -- Find the network with the given name.
         net <- getNetwork
         -- Open the chat log for this network.
-        chatLog <- liftIO $ mkChatLog ("log" </> (T.unpack (net ^. networkName)))
+        chatLog <- liftIO $ mkChatLog ("log" </> T.unpack (net ^. networkName))
         -- Start the network controller.
-        hand <- liftIO $
+        liftIO $
             spawnActor $
-            (flip runReaderT) netCtx $
-            initNetCtlActor $ NetCtlState
+            flip runReaderT netCtx $
+            initNetCtlActor NetCtlState
                 { _netNicks = net ^. networkNicks
                 , _netNick = undefined
                 , _netBuffers = M.empty
@@ -148,13 +148,12 @@ startNetCtl netName ucAddr = do
                 , _netChatLog = chatLog
                 , _userCtlAddr = ucAddr
                 }
-        return hand
   where
     mkNetContext :: (MonadCCState m, MonadUserState m) => m NetCtlCtx
     mkNetContext = do
         uName <- getUserName
         acid <- getAcidState
-        return $ NetCtlCtx
+        return NetCtlCtx
             { _ncNetName = netName
             , _ncUserName = uName
             , _ncAcidState = acid
@@ -169,7 +168,7 @@ initNetCtlActor :: NetCtlState -> ReaderT NetCtlCtx (ActorM NetCtlActorMsg) ()
 initNetCtlActor = evalStateT $ runResourceT $ runStderrLoggingT $ do
     -- Look up a list of servers to try.
     servers <- getServerList
-    let server = headNote ("Network has no servers.") servers
+    let server = headNote "Network has no servers." servers
         host = T.unpack (server ^. serverHost)
         port = PortNumber $ fromIntegral (server ^. serverPort)
     netHost .= host
@@ -241,11 +240,11 @@ ncSendCoreEvent evt = do
     ucSendCoreEvt uc evt
 
 -- | Logs the given event.
-logEvent :: (NetCtlActor m) => BufferName -> LogEvent -> m ()
+logEvent :: (NetCtlActor m) => ChatBufferName -> BufferEvent -> m ()
 logEvent buf evt = do
     time <- liftIO getCurrentTime
     chatLog <- use netChatLog
-    let logLine = LogLine buf time evt
+    let logLine = BufLogLine buf time evt
     liftIO $ writeLogLine chatLog logLine
 
 -- | Generates a status message for the given numeric reply message arguments
@@ -254,7 +253,7 @@ logMsgForReply :: (NetCtlActor m) => [T.Text] -> Maybe T.Text -> m T.Text
 logMsgForReply args' bodyM = do
     myNick <- use netNick
     -- Strip the current nick from the front of the args list if it is present.
-    let args = if length args' > 0 && head args' == myNick
+    let args = if not (null args') && head args' == myNick
                   then tail args'
                   else args'
         argStr = T.intercalate ", " args
@@ -266,8 +265,8 @@ logMsgForReply args' bodyM = do
 
 -- {{{ Debugging Stuff
 
-getUserList :: (NetCtlActor m) => BufferName -> m [Nick]
-getUserList buf = do
+getUserList :: (NetCtlActor m) => ChatBufferName -> m [Nick]
+getUserList buf =
     map (^. buNick) <$> use (netBuffer buf . bufUsers)
 
 -- }}}
@@ -275,19 +274,19 @@ getUserList buf = do
 -- {{{ Utility Lenses and other functions for getting information.
 
 -- | A lens pointing to the state variable for the buffer with the given name.
-netBuffer :: BufferName -> Traversal' NetCtlState NetBufState
+netBuffer :: ChatBufferName -> Traversal' NetCtlState NetBufState
 netBuffer name = netBuffers . ix name
 
 -- | Maps the given function over all of the network buffers which satisfy the
 -- given predicate.
 forBufsWhere :: (NetCtlActor m) =>
-    (NetBufState -> Bool) -> (BufferName -> NetBufState -> m NetBufState) -> m ()
+    (NetBufState -> Bool) -> (ChatBufferName -> NetBufState -> m NetBufState) -> m ()
 forBufsWhere predicate action = do
     bufs <- use netBuffers
     newBufs <- iforM bufs $ \key buf ->
         if predicate buf
            then action key buf
-           else return (buf)
+           else return buf
     netBuffers .= newBufs
 
 
@@ -330,26 +329,26 @@ handleClientCmd (SendMessage _ dest msg MtNotice) =
 
 -- {{{ Messages
 
-handlePrivmsg :: (NetCtlActor m) => IRCUser -> BufferName -> T.Text -> m ()
-handlePrivmsg user dest msg = do
-    bufferEvent dest $ ReceivedMessage user msg MtPrivmsg
+handlePrivmsg :: (NetCtlActor m) => IRCSource -> ChatBufferName -> T.Text -> m ()
+handlePrivmsg source dest msg =
+    bufferEvent dest $ UserMessage source msg
 
-handleNotice :: (NetCtlActor m) => IRCUser -> BufferName -> T.Text -> m ()
-handleNotice user dest msg = do
-    bufferEvent dest $ ReceivedMessage user msg MtNotice
+handleNotice :: (NetCtlActor m) => IRCSource -> ChatBufferName -> T.Text -> m ()
+handleNotice source dest msg =
+    bufferEvent dest $ NoticeMessage source msg
 
 -- }}}
 
 -- {{{ Current user join, part, and nick
 
-handleSelfJoin :: (NetCtlActor m) => IRCUser -> BufferName -> m ()
+handleSelfJoin :: (NetCtlActor m) => IRCUser -> ChatBufferName -> m ()
 handleSelfJoin user dest = do
     -- Add the buffer to our buffer list.
     -- TODO: Send an event indicating a buffer was added.
-    netBuffers %= (M.insert dest $ blankNetBufState)
+    netBuffers %= M.insert dest blankNetBufState
     bufferEvent dest $ UserJoin user
 
-handleSelfPart :: (NetCtlActor m) => IRCUser -> BufferName -> Maybe T.Text -> m ()
+handleSelfPart :: (NetCtlActor m) => IRCUser -> ChatBufferName -> Maybe T.Text -> m ()
 handleSelfPart user dest msgM = do
     -- Remove the buffer from our list.
     netBuffers %= sans dest
@@ -358,13 +357,13 @@ handleSelfPart user dest msgM = do
 handleSelfNickChange :: (NetCtlActor m) => IRCUser -> Nick -> m ()
 handleSelfNickChange user newNick = do
     netNick .= newNick
-    networkEvent $ UserNickChange user newNick
+    networkEvent $ MyNickChange user newNick
 
 -- }}}
 
 -- {{{ Other user join, part, nick, and quit
 
-handleOtherJoin :: (NetCtlActor m) => IRCUser -> BufferName -> m ()
+handleOtherJoin :: (NetCtlActor m) => IRCUser -> ChatBufferName -> m ()
 handleOtherJoin user dest = do
     -- Add the user to the buffer.
     netBuffer dest . bufUsers <>= [BufferUser (user ^. iuNick) BufUserNormal]
@@ -372,7 +371,7 @@ handleOtherJoin user dest = do
     $(logDebugS) "NetCtl" ("User joined. Users: " <> T.unwords users)
     bufferEvent dest $ UserJoin user
 
-handleOtherPart :: (NetCtlActor m) => IRCUser -> BufferName -> Maybe T.Text -> m ()
+handleOtherPart :: (NetCtlActor m) => IRCUser -> ChatBufferName -> Maybe T.Text -> m ()
 handleOtherPart user dest msgM = do
     -- Remove the user from the buffer.
     netBuffer dest . bufUsers %= filter (\u -> u ^. buNick /= (user ^. iuNick))
@@ -381,7 +380,7 @@ handleOtherPart user dest msgM = do
     bufferEvent dest $ UserPart user msgM
 
 handleQuit :: (NetCtlActor m) => IRCUser -> Maybe T.Text -> m ()
-handleQuit user@(IRCUser { _iuNick = nick }) msgM = do
+handleQuit user@(IRCUser { _iuNick = nick }) msgM =
     -- For all buffers containing the given nick.
     forBufsWhere (hasUser nick) $ \bufId buf -> do
         bufferEvent bufId $ UserQuit user msgM
@@ -389,7 +388,7 @@ handleQuit user@(IRCUser { _iuNick = nick }) msgM = do
         return (buf & bufUsers %~ filter (\u -> u ^. buNick /= nick))
 
 handleOtherNickChange :: (NetCtlActor m) => IRCUser -> Nick -> m ()
-handleOtherNickChange user@(IRCUser { _iuNick = nick }) newNick = do
+handleOtherNickChange user@(IRCUser { _iuNick = nick }) newNick =
     -- For all buffers containing the given nick.
     forBufsWhere (hasUser nick) $ \bufId buf -> do
         bufferEvent bufId $ OtherNickChange user newNick
@@ -435,7 +434,7 @@ handleWelcome args msgM = do
 -- secret channels. Chat Core currently just ignores this argument.
 -- The third argument is the channel name.
 -- The body is a space separated list of users in the channel.
-handleNamesList :: (NetCtlActor m) => BufferName -> [Nick] -> m ()
+handleNamesList :: (NetCtlActor m) => ChatBufferName -> [Nick] -> m ()
 handleNamesList chan names = do
     $(logDebugS) "NetCtl" ("Names: " <> T.unwords names)
     -- Append the list of names to the buffer's name list.
@@ -446,7 +445,7 @@ handleNamesList chan names = do
         receiving <- use bufReceivingNames
         -- If so, just continue adding users to the name list.
         -- Otherwise, clear the name list and start receiving names.
-        if receiving then return () else bufUsers .= []
+        unless receiving (bufUsers .= [])
         bufReceivingNames .= True
         bufUsers <>= map bufUserFromStr names
     bufUserFromStr userStr =
@@ -460,7 +459,7 @@ handleNamesList chan names = do
 -- RPL_ENDOFNAMES
 -- When the name list ends, reset the bufRecvingNames variable to False and
 -- send out a name list update event.
-handleNamesListEnd :: (NetCtlActor m) => BufferName -> m ()
+handleNamesListEnd :: (NetCtlActor m) => ChatBufferName -> m ()
 handleNamesListEnd chan = do
     $(logDebugS) "NetCtl" "End of name list."
     netBuffer chan . bufReceivingNames .= False
@@ -487,12 +486,12 @@ handleNumeric senderM (_, _, _) args msgM = do
 -- {{{ Handle Buffer Events
 
 -- | Sends a buffer event for the given buffer.
-bufferEvent :: (NetCtlActor m) => BufferName -> BufferEvent -> m ()
+bufferEvent :: (NetCtlActor m) => ChatBufferName -> BufferEvent -> m ()
 bufferEvent bufId evt = do
     netId <- view ncNetName
     -- Send the event and log it.
-    ncSendCoreEvent $ BufCoreEvent netId bufId evt
-    logEvent bufId $ LogBufEvent evt
+    ncSendCoreEvent $ ChatBufferEvent netId bufId evt
+    logEvent bufId evt
 
 
 -- }}}
@@ -504,7 +503,7 @@ networkEvent :: (NetCtlActor m) => NetworkEvent -> m ()
 networkEvent evt = do
     netId <- view ncNetName
     -- Send the event and log it to the -net- buffer.
-    ncSendCoreEvent $ NetCoreEvent netId evt
+    ncSendCoreEvent $ ChatNetworkEvent netId evt
 
 
 -- | Writes the given message to the network buffer for this IRC network.
@@ -532,57 +531,57 @@ switchIsMe user ifSo ifNot = do
 
 
 handleIRCEvent :: (NetCtlActor m) => IRCLine -> m ()
-handleIRCEvent (IRCLine _ (ICmdPing) _ senderM) = sendPongCmd senderM
+handleIRCEvent (IRCLine _ ICmdPing _ senderM) = sendPongCmd senderM
 
 
-handleIRCEvent (IRCLine (Just (UserSource user)) (ICmdPrivmsg) [dest] (Just msg)) =
-    handlePrivmsg user dest msg
-handleIRCEvent (IRCLine (Just (UserSource user)) (ICmdNotice) [dest] (Just msg)) =
-    handleNotice user dest msg
+handleIRCEvent (IRCLine (Just source) ICmdPrivmsg [dest] (Just msg)) =
+    handlePrivmsg source dest msg
+handleIRCEvent (IRCLine (Just source) ICmdNotice [dest] (Just msg)) =
+    handleNotice source dest msg
 
 
 -- JOIN
-handleIRCEvent (IRCLine (Just (UserSource user)) (ICmdJoin) [dest] Nothing) =
+handleIRCEvent (IRCLine (Just (UserSource user)) ICmdJoin [dest] Nothing) =
     switchIsMe user
         (handleSelfJoin user dest)
         (handleOtherJoin user dest)
 -- PART
-handleIRCEvent (IRCLine (Just (UserSource user)) (ICmdPart) [dest] msgM) =
+handleIRCEvent (IRCLine (Just (UserSource user)) ICmdPart [dest] msgM) =
     switchIsMe user
         (handleSelfPart user dest msgM)
         (handleOtherPart user dest msgM)
 -- QUIT
-handleIRCEvent (IRCLine (Just (UserSource user)) (ICmdQuit) [] msgM) =
+handleIRCEvent (IRCLine (Just (UserSource user)) ICmdQuit [] msgM) =
     switchIsMe user
         (return ()) -- We don't do anything here.
         (handleQuit user msgM)
 -- NICK
-handleIRCEvent (IRCLine (Just (UserSource user)) (ICmdNick) [] (Just newNick)) =
+handleIRCEvent (IRCLine (Just (UserSource user)) ICmdNick [] (Just newNick)) =
     switchIsMe user
         (handleSelfNickChange user newNick)
         (handleOtherNickChange user newNick)
 
 
 -- RPL_WELCOME
-handleIRCEvent (IRCLine _ (ICmdOther (['0', '0', '1'])) args msgM) =
+handleIRCEvent (IRCLine _ (ICmdOther "001") args msgM) =
     handleWelcome args msgM
 
 
 -- RPL_NAMREPLY
-handleIRCEvent (IRCLine _ (ICmdOther (['3', '5', '3'])) [_, _, chan] (Just names)) =
+handleIRCEvent (IRCLine _ (ICmdOther "353") [_, _, chan] (Just names)) =
     handleNamesList chan $ T.words names
 
 -- RPL_ENDOFNAMES
-handleIRCEvent (IRCLine _ (ICmdOther (['3', '6', '6'])) [_, chan] _) =
+handleIRCEvent (IRCLine _ (ICmdOther "366") [_, chan] _) =
     handleNamesListEnd chan
 
 
 -- RPL_ENDOFNAMES
-handleIRCEvent (IRCLine sourceM (ICmdOther ([c1, c2, c3])) args bodyM) =
+handleIRCEvent (IRCLine sourceM (ICmdOther [c1, c2, c3]) args bodyM) =
     handleNumeric sourceM (c1, c2, c3) args bodyM
 
 
-handleIRCEvent line = do
+handleIRCEvent line =
     $(logErrorS) "NetCtl" ("Unhandled IRC line: " <> tshow line)
 
 -- }}}

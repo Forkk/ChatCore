@@ -6,8 +6,8 @@ import ChatCore.Events
 import ChatCore.IRC.Line
 
 data NetCtlActorMsg
-    = NetCtlClientCmd   ClientCommand
-    | NetCtlIRCLine     IRCLine
+    -- = NetCtlClientCmd   ClientCommand
+    = NetCtlIRCLine     IRCLine
 
 instance ActorMessage NetCtlActorMsg
 

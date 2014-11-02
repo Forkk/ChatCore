@@ -15,6 +15,7 @@ import Data.Aeson
 import Data.Aeson.Types
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as BL
+import Data.Maybe
 import qualified Data.Text as T
 import qualified Data.Text.Lazy.IO as TL
 import qualified Data.Text.Lazy.Encoding as TL
@@ -22,9 +23,10 @@ import Network
 import System.IO
 
 import ChatCore.Events
-import ChatCore.Protocol
 import ChatCore.Types
 import ChatCore.Util
+import ChatCore.Protocol
+import ChatCore.IRC
 
 
 -- | Creates a JSON connection listener listening on the given port.
@@ -77,12 +79,12 @@ connection handle host port = do
     connection handle host port
   where
     -- Parses the given message from the client.
-    parseClientMsgM msgData = do
+    parseClientMsgM msgData =
         -- Log the error if the parsing failed. Otherwise, convert the
         -- Either to a Maybe and pass it on.
         logParseError $ decodeClientCmd msgData
     -- If the given argument is a parse error message, log it.
-    logParseError (Right cmd) = do
+    logParseError (Right cmd) =
         return $ Just cmd
     logParseError (Left errMsg) = do
         liftIO $ putStrLn ("Error parsing JSON message: " ++ errMsg)
@@ -97,7 +99,7 @@ handleClientMsg = receivedClientCmd
 
 -- | Handles a core event.
 handleCoreEvt :: Handle -> CoreEvent -> RemoteClient ()
-handleCoreEvt handle evt = do
+handleCoreEvt handle evt =
     liftIO $ TL.hPutStrLn handle $ TL.decodeUtf8 $ encodeCoreEvt evt
 
 
@@ -136,13 +138,70 @@ encodeCoreEvt :: CoreEvent -> BL.ByteString
 encodeCoreEvt = encode . coreEvtToJSON
 
 coreEvtToJSON :: CoreEvent -> Value
-coreEvtToJSON (BufCoreEvent chatNet chatBuf evt) = object $
+coreEvtToJSON (ChatBufferEvent chatNet chatBuf evt) = object $
     [ "network"     .= chatNet
     , "buffer"      .= chatBuf
     ] ++ bufEvtPairs evt
-coreEvtToJSON (NetCoreEvent chatNet evt) = object $
-    [ "network"     .= chatNet
-    ] ++ netEvtPairs evt
+coreEvtToJSON (ChatNetworkEvent chatNet evt) = object $
+    ("network" .= chatNet) : netEvtPairs evt
+
+-- }}}
+
+-- {{{ Event to JSON
+
+ircSourceStr :: IRCSource -> T.Text
+ircSourceStr (ServerSource serv) = serv
+ircSourceStr (UserSource (IRCUser { _iuNick = nick })) = nick
+
+bufEvtPairs :: BufferEvent -> [Pair]
+bufEvtPairs (UserMessage sender content) =
+    [ "event"       .= ("message" :: T.Text)
+    , "sender"      .= ircSourceStr sender
+    , "message"     .= content
+    ]
+bufEvtPairs (NoticeMessage sender content) =
+    [ "event"       .= ("notice" :: T.Text)
+    , "sender"      .= ircSourceStr sender
+    , "message"     .= content
+    ]
+bufEvtPairs (StatusMessage sender content) =
+    [ "event"   .= ("status" :: T.Text)
+    , "sender"  .= sender
+    , "message" .= content
+    ]
+
+bufEvtPairs (UserJoin user) =
+    [ "event"   .= ("join" :: T.Text)
+    , "user"    .= _iuNick user
+    ]
+bufEvtPairs (UserPart user msgM) =
+    [ "event"   .= ("part" :: T.Text)
+    , "user"    .= _iuNick user
+    ] ++ ["message" .= fromJust msgM | isJust msgM]
+bufEvtPairs (UserQuit user msgM) =
+    [ "event"   .= ("quit" :: T.Text)
+    , "user"    .= _iuNick user
+    ] ++ ["message" .= fromJust msgM | isJust msgM]
+
+bufEvtPairs (OtherNickChange user newNick) =
+    [ "event"   .= ("other-nick" :: T.Text)
+    , "user"    .= _iuNick user
+    , "new-nick".= newNick
+    ]
+
+
+netEvtPairs :: NetworkEvent -> [Pair]
+netEvtPairs (NetConnect) =
+    [ "event"   .= ("connected" :: T.Text)
+    ]
+netEvtPairs (NetDisconnect) =
+    [ "event"   .= ("disconnected" :: T.Text)
+    ]
+netEvtPairs (MyNickChange user newNick) =
+    [ "event"   .= ("nick-change" :: T.Text)
+    , "old-nick".= _iuNick user
+    , "new-nick".= newNick
+    ]
 
 -- }}}
 
