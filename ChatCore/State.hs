@@ -9,15 +9,15 @@ module ChatCore.State (
     , initialChatCoreState
 
     , ChatCoreUser (..)
-    , userName
-    , userPassword
-    , userNetworks
+    , usrStName
+    , usrStPassword
+    , usrStNetworks
 
     , ChatCoreNetwork (..)
-    , networkName
-    , networkNicks
-    , networkServers
-    , networkBuffers
+    , netStName
+    , netStNicks
+    , netStServers
+    , netStBuffers
 
     , ChatCoreNetServer (..)
     , serverHost
@@ -26,47 +26,39 @@ module ChatCore.State (
     , ChatCoreBuffer (..)
     , ccBufferName
     , ccBufferActive
+    
+    -- * Behavior Stuff
+    , holdAcidState
+    , linkAcidState
 
-    -- * Monad Classes
-    , MonadAcidState (..)
-    , MonadCCState
+    -- * Core
 
-    , MonadUserState (..)
-    , MonadNetworkState (..)
-
-    -- * Context Classes
-    , HasAcidState (..)
-    , HasChatCoreUser (..)
-    , HasChatCoreNetwork (..)
-
-    -- * Core Actions
-
-    -- * User Actions
+    -- * User
     , getUsers
     , getUser
-    , getUserByName
 
     , addUser
     , setUserPassword
 
-    -- * Network Actions
+    -- * Network
     , getUserNetworks
-    , getUserNetwork
     , getNetwork
 
     , addUserNetwork
+    
+    , SetNetworkBuffers (..)
     ) where
 
 import Control.Applicative
 import Control.Monad.State
-import Control.Monad.Reader
 import Crypto.PasswordStore
 import Data.Acid
+import Data.Acid.Advanced hiding (Event)
 import qualified Data.ByteString as B
 import qualified Data.IxSet as I
-import Data.Maybe
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
+import FRP.Sodium
 
 import ChatCore.Types
 import ChatCore.State.Internal hiding
@@ -74,74 +66,86 @@ import ChatCore.State.Internal hiding
     , setUserPassword
     , getUserNetwork, getUserNetworks, addUserNetwork
     , setNetworkNicks, setNetworkServers
-    , addNetworkBuffer, delNetworkBuffer
     , setChanBufferActive
     )
 
-type MonadCCState = MonadAcidState ChatCoreState
 
--- {{{ For `ChatCoreUser`
+-- | Creates a new behavior based on the given acid state events.
+-- This works similarly to `hold`, taking new values from the given input
+-- stream. The initial value will be supplied by the given "getter" event, and
+-- the given "setter" event will be used to update the values in the database.
+-- The function returns a tuple with the resulting behavior and a function that
+-- should be called to clean up.
+holdAcidState :: ( QueryEvent getEvt, MethodState getEvt ~ MethodState setEvt
+                 , UpdateEvent setEvt, MethodResult setEvt ~ () )
+              => AcidState (EventState getEvt)
+              -> getEvt
+              -> (EventResult getEvt -> setEvt)
+              -> Event (EventResult getEvt)
+              -> IO (Behavior (EventResult getEvt), IO ())
+holdAcidState acid getEvt setEvt event = do
+    initVal <- query' acid getEvt
+    sync $ do
+        bState <- hold initVal event
+        cleanup <- listen (value bState) (update' acid . setEvt)
+        return (bState, cleanup)
 
--- {{{ Classes
+-- | Links the given behavior to the given acid state event.
+-- This means the event function will be called each time the behavior changes.
+-- This function returns a cleanup IO action.
+linkAcidState :: ( UpdateEvent event
+                 , EventResult event ~ () )
+              => AcidState (EventState event)
+              -> (input -> event)
+              -> Behavior input
+              -> Reactive (IO ())
+linkAcidState acid updateFunc behavior =
+    listen (updates behavior) (update' acid . updateFunc)
 
--- | Class for data structures with a `UserName` field referring to a specific
--- `ChatCoreUser`. Reader monads with instances of this class as a value will
--- be instances of `MonadReader ChatCoreUser`.
-class HasChatCoreUser s where
-    currentUserName :: s -> UserName
+-- {{{ User State Behaviors
 
--- | Monad class for contexts that have access to a user in the database.
--- The user is assumed to exist.
-class (MonadCCState m) => MonadUserState m where
-    getUserName :: (MonadUserState m) => m UserName
-
-instance (MonadCCState m, HasChatCoreUser s, MonadReader s m) =>
-         MonadUserState m where
-    getUserName = asks currentUserName
+-- TODO: Maybe automate some of this with Template Haskell.
 
 -- }}}
 
--- {{{ Actions
+-- {{{ Network State Behaviors
+
+
+-- }}}
+
+-- {{{ Functions
 
 -- | Gets a list of all users.
-getUsers :: (MonadCCState m) => m [ChatCoreUser]
-getUsers = queryM $ GetUsers
+getUsers :: (MonadIO m) =>
+            AcidState ChatCoreState
+         -> m [ChatCoreUser]
+getUsers acid = query' acid GetUsers
 
 -- | Gets the given user.
-getUserByName :: (MonadCCState m) => UserName -> m (Maybe ChatCoreUser)
-getUserByName uName = queryM $ GetUser uName
-
--- | Gets the current user.
-getUser :: (MonadUserState m) => m ChatCoreUser
-getUser = do
-    uName <- getUserName
-    fromJust <$> getUserByName uName
+getUser :: (MonadIO m) =>
+           AcidState ChatCoreState
+        -> UserName -> m (Maybe ChatCoreUser)
+getUser acid uName = query' acid $ GetUser uName
 
 
 -- | Adds a user with the given user name and password.
 -- The password will be hashed automatically.
-addUser :: (MonadCCState m) => UserName -> T.Text -> m ()
-addUser uName password = do
+addUser :: (MonadIO m) =>
+           AcidState ChatCoreState
+        -> UserName -> T.Text -> m ()
+addUser acid uName password = do
     passHash <- hashUserPassword password
-    updateM $ AddUser uName passHash
+    update' acid $ AddUser uName passHash
 
 -- | Sets the user's password to the given password.
 -- This function also handles hashing the password.
-setUserPassword :: (MonadUserState m) => T.Text -> m ()
-setUserPassword password = do
+setUserPassword :: (MonadIO m) =>
+                   AcidState ChatCoreState
+                -> UserName -> T.Text -> m ()
+setUserPassword acid uName password = do
     passHash <- hashUserPassword password
-    updateUser $ SetUserPassword passHash
+    update' acid $ SetUserPassword passHash uName
 
-
--- | Runs the given event on the current user.
-updateUser ::
-    ( MonadUserState m
-    , MonadAcidState (EventState event) m
-    , UpdateEvent event) =>
-    (UserName -> event) -> m (EventResult event)
-updateUser evt = do
-    uName <- getUserName
-    updateM (evt uName)
 
 hashUserPassword :: (MonadIO m) => T.Text -> m B.ByteString
 hashUserPassword password = liftIO $ makePassword (T.encodeUtf8 password) 16
@@ -150,73 +154,36 @@ hashUserPassword password = liftIO $ makePassword (T.encodeUtf8 password) 16
 
 -- }}}
 
--- {{{ For `ChatCoreNetwork`
+-- {{{ `ChatCoreNetwork` Actions
 
--- {{{ Classes
-
--- | Class for data structures with a `ChatNetworkName` field referring to a
--- specific `ChatCoreNetwork`. Reader monads with instances of this class as a
--- value will be instances of `MonadReader ChatCoreNetwork`.
-class HasChatCoreNetwork s where
-    currentNetworkName :: s -> ChatNetworkName
-
--- | Monad class for contexts that have access to a network in the database.
--- The network is assumed to exist.
-class MonadUserState m => MonadNetworkState m where
-    getNetworkName :: (MonadUserState m) => m UserName
-
-instance (HasChatCoreNetwork s, MonadReader s m, MonadUserState m) =>
-         MonadNetworkState m where
-    getNetworkName = asks currentNetworkName
-
--- }}}
-
--- {{{ Actions
-
--- | Gets the the current network in a `MonadNetworkState` context.
-getNetwork :: (MonadNetworkState m) =>
-    m ChatCoreNetwork
-getNetwork = do
-    netName <- getNetworkName
-    fromJust <$> getUserNetwork netName
+-- | Gets the the current networks in a `MonadNetworkState` context.
+getNetwork :: (MonadIO m) =>
+              AcidState ChatCoreState
+           -> ChatUserName -> ChatNetworkName
+           -> m (Maybe ChatCoreNetwork)
+getNetwork acid uName netName =
+    query' acid $ GetUserNetwork uName netName
 
 -- | Gets a list of the user's networks.
-getUserNetworks :: (MonadUserState m) => m [ChatCoreNetwork]
-getUserNetworks = do
-    uName <- getUserName
-    queryM $ GetUserNetworks uName
-
--- | Gets the network with the given name from the current user.
-getUserNetwork :: (MonadUserState m) =>
-    ChatNetworkName -> m (Maybe ChatCoreNetwork)
-getUserNetwork netName = do
-    uName <- getUserName
-    queryM $ GetUserNetwork netName uName
+getUserNetworks :: (MonadIO m) =>
+                   AcidState ChatCoreState
+                -> ChatUserName
+                -> m [ChatCoreNetwork]
+getUserNetworks acid uName =
+    query' acid $ GetUserNetworks uName
 
 
-addUserNetwork :: (MonadUserState m) =>
-    ChatNetworkName -> [Nick] -> [ChatCoreNetServer] -> m ()
-addUserNetwork netName nicks servs = do
-    updateUser $ AddUserNetwork $ ChatCoreNetwork
-        { _networkName = netName
-        , _networkNicks = nicks
-        , _networkServers = servs
-        , _networkBuffers = I.empty
-        }
-
-
--- | Runs the given event on the current network.
-updateNetwork ::
-    ( MonadUserState m, MonadNetworkState m
-    , MonadAcidState (EventState event) m
-    , UpdateEvent event) =>
-    (ChatNetworkName -> UserName -> event) -> m (EventResult event)
-updateNetwork evt = do
-    uName <- getUserName
-    netName <- getNetworkName
-    updateM (evt uName netName)
+addUserNetwork :: (MonadIO m) =>
+                  AcidState ChatCoreState
+               -> ChatUserName
+               -> ChatNetworkName
+               -> [Nick] -> [ChatCoreNetServer] -> m ()
+addUserNetwork acid uName netName nicks servs =
+    update' acid $ AddUserNetwork ChatCoreNetwork
+                { _netStName = netName
+                , _netStNicks = nicks
+                , _netStServers = servs
+                , _netStBuffers = I.empty
+                } uName
 
 -- }}}
-
--- }}}
-

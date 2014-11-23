@@ -1,9 +1,7 @@
 module Main where
 
-import Control.Monad.Logger (runStderrLoggingT)
-
-import ChatCore.CoreController
+import ChatCore.Core
 
 main :: IO ()
-main = runStderrLoggingT runCoreCtl
+main = runCore
 

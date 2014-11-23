@@ -1,7 +1,9 @@
 module ChatCore.Types where
 
 import Control.Applicative
+import Control.Lens (makeClassy)
 import Data.Aeson
+import qualified Data.ByteString as B
 import qualified Data.Text as T
 
 type ChatNetworkName = T.Text
@@ -24,17 +26,52 @@ type ChatChan = T.Text
 
 -- | A string identifying a user.
 type UserName = T.Text
+type ChatUserName = T.Text
+type Password = B.ByteString
 
 
--- | Identifies the type of a message (i.e. PRIVMSG, NOTICE, etc.)
-data MessageType = MtPrivmsg | MtNotice deriving (Show, Read, Eq)
+-- | Represents the status of a network connection.
+data ConnectionStatus = Connected | Connecting | Disconnected
+                        deriving (Eq, Show, Read)
 
-instance FromJSON MessageType where
-    parseJSON (String "PRIVMSG") = return MtPrivmsg
-    parseJSON (String "NOTICE") = return MtNotice
+instance FromJSON ConnectionStatus where
+    parseJSON (String "connected") = return Connected
+    parseJSON (String "connecting") = return Connecting
+    parseJSON (String "disconnected") = return Disconnected
     parseJSON _ = empty
 
-instance ToJSON MessageType where
-    toJSON (MtPrivmsg) = String "PRIVMSG"
-    toJSON (MtNotice) = String "NOTICE"
+instance ToJSON ConnectionStatus where
+    toJSON (Connected) = String "connected"
+    toJSON (Connecting) = String "connecting"
+    toJSON (Disconnected) = String "disconnected"
 
+
+-- | Basic information about a chat network.
+data ChatNetworkInfo = ChatNetworkInfo
+    { _networkName :: ChatNetworkName
+    , _networkStatus :: ConnectionStatus
+    , _networkUserNick :: Nick
+    }
+$(makeClassy ''ChatNetworkInfo)
+
+instance FromJSON ChatNetworkInfo where
+    parseJSON (Object obj) = ChatNetworkInfo
+                             <$> obj .: "name"
+                             <*> obj .: "status"
+                             <*> obj .: "user_nick"
+    parseJSON _ = error "Invalid chat network info. Must be an object."
+
+instance ToJSON ChatNetworkInfo where
+    toJSON (ChatNetworkInfo name status userNick) = object
+        [ "name" .= name
+        , "status" .= status
+        , "user_nick" .= userNick
+        ]
+
+
+data ChatBufferInfo = ChatBufferInfo
+    { _biName :: ChatBufferName
+    -- , _biType :: ChatBufferType
+    , _biActive :: Bool -- ^ True if the user is in this channel.
+    , _biUsers :: [Nick]
+    }

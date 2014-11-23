@@ -78,7 +78,6 @@ data ClientCommand
         { sendMsgNetwork    :: ChatNetworkName  -- ID of the IRC network to send the message on.
         , sendMsgDest       :: ChatDest         -- Destination to send the message to.
         , sendMsgContent    :: T.Text           -- Content of the message.
-        , sendMsgType       :: MessageType      -- The type of message (PRIVMSG or NOTICE).
         }
     | JoinChannel ChatNetworkName ChatChan
     | PartChannel ChatNetworkName ChatChan (Maybe T.Text)

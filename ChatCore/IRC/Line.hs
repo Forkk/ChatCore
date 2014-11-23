@@ -2,10 +2,15 @@
 -- Module containing functions and data types for parsing lines from IRC.
 module ChatCore.IRC.Line
     ( IRCLine (..)
+    , ilSource
+    , ilCommand
+    , ilArgs
+    , ilBody
     , IRCCommand (..)
 
     , IRCSource (..)
-    , srcUser
+    , _ServerSource
+    , _UserSource
 
     , IRCUser (..)
     , iuNick
@@ -48,9 +53,9 @@ $(deriveSafeCopy 0 'base ''IRCUser)
 -- | Represents the source that a message came from.
 data IRCSource
     = ServerSource T.Text
-    | UserSource { _srcUser :: IRCUser }
+    | UserSource IRCUser
     deriving (Show, Read, Eq)
-$(makeLenses ''IRCSource)
+$(makePrisms ''IRCSource)
 $(deriveSafeCopy 0 'base ''IRCSource)
 
 -- | Represents a single argument.
@@ -62,15 +67,16 @@ type IRCBody = T.Text
 
 -- | Represents a line in the IRC protocol.
 data IRCLine = IRCLine
-    { ilSource      :: Maybe IRCSource
-    , ilCommand     :: IRCCommand
-    , ilArgs        :: [IRCArgument]
-    , ilBody        :: Maybe IRCBody
+    { _ilSource     :: Maybe IRCSource
+    , _ilCommand    :: IRCCommand
+    , _ilArgs       :: [IRCArgument]
+    , _ilBody       :: Maybe IRCBody
     } deriving (Show, Eq)
+$(makeLenses ''IRCLine)
 
 -- | Parses the given text to an IRC line structure.
 parseLine :: B.ByteString -> Either ParseError IRCLine
-parseLine str = parse lineParser "" str
+parseLine = parse lineParser ""
 
 -- }}}
 
@@ -86,16 +92,16 @@ lineParser = do
     lineCmd <- command
 
     -- Read all of the arguments until we reach the body or the end.
-    lineArgs <- manyTill arg (((try $ lookAhead $ body) >> return ()) <|> eof)
+    lineArgs <- manyTill arg (void (try $ lookAhead body) <|> eof)
 
     -- Read the body.
     lineBody <- (Just <$> body) <|> return Nothing
 
     return IRCLine
-        { ilSource = lineSource
-        , ilCommand = lineCmd
-        , ilArgs = lineArgs
-        , ilBody = lineBody
+        { _ilSource = lineSource
+        , _ilCommand = lineCmd
+        , _ilArgs = lineArgs
+        , _ilBody = lineBody
         }
 
 -- | Parses one segment of an IRC line.
@@ -109,8 +115,7 @@ source :: Parser IRCSource
 source = do
     -- If the line starts with a colon, read the source string.
     char ':'
-    src <- try userSource <|> serverSource
-    return src
+    try userSource <|> serverSource
 
 -- | Parser which parses a user source in the format <nick>!<ident>@<host>.
 userSource :: Parser IRCSource
@@ -152,10 +157,10 @@ lineToByteString line = BL.toStrict $ TL.encodeUtf8 $ TL.toLazyText $ lineTextBu
 -- FIXME: Don't allow newlines anywhere in the line.
 lineTextBuilder :: IRCLine -> TL.Builder
 lineTextBuilder line =
-       maybe mempty (\t -> TL.singleton ':' <> t <> TL.singleton ' ') (sourceStr <$> ilSource line)
-    <> (TL.fromString $ icmdToStr $ ilCommand line)
-    <> (mconcat $ map spaceAndText $ ilArgs line)
-    <> maybe mempty (\t -> TL.fromText " :" <> TL.fromText t) (ilBody line)
+       maybe mempty (\t -> TL.singleton ':' <> t <> TL.singleton ' ') (sourceStr <$> _ilSource line)
+    <> (TL.fromString $ icmdToStr $ _ilCommand line)
+    <> (mconcat $ map spaceAndText $ _ilArgs line)
+    <> maybe mempty (\t -> TL.fromText " :" <> TL.fromText t) (_ilBody line)
   where
     spaceAndText text = TL.singleton ' ' <> TL.fromText text
     sourceStr (UserSource (IRCUser nick ident host)) =
@@ -169,7 +174,7 @@ lineTextBuilder line =
 -- {{{ Tests
 
 assertParsed :: (Eq a, Show a) => String -> B.ByteString -> Parser a -> a -> Assertion
-assertParsed name testData parser expected = do
+assertParsed name testData parser expected =
     either (assertFailure . parseErrMsg)
            (\val -> unless (val == expected) (assertFailure $ wrongValMsg val))
            result
@@ -198,50 +203,50 @@ lineParserTest1 :: Test
 lineParserTest1 = ircLineTestCase "parse line with arguments, source, and body"
     ":Forkk!~forkk@awesome/forkk PRIVMSG #channel :test body content"
     IRCLine
-        { ilSource  = Just $ UserSource $ IRCUser "Forkk" "~forkk" "awesome/forkk"
-        , ilCommand = ICmdPrivmsg
-        , ilArgs    = ["#channel"]
-        , ilBody    = Just "test body content"
+        { _ilSource  = Just $ UserSource $ IRCUser "Forkk" "~forkk" "awesome/forkk"
+        , _ilCommand = ICmdPrivmsg
+        , _ilArgs    = ["#channel"]
+        , _ilBody    = Just "test body content"
         }
 
 lineParserTest2 :: Test
 lineParserTest2 = ircLineTestCase "parse line with arguments, network source, and body"
     ":server.network.net PRIVMSG #channel :test body content"
     IRCLine
-        { ilSource  = Just $ UserSource $ IRCUser "Forkk" "~forkk" "awesome/forkk"
-        , ilCommand = ICmdPrivmsg
-        , ilArgs    = ["#channel"]
-        , ilBody    = Just "test body content"
+        { _ilSource  = Just $ UserSource $ IRCUser "Forkk" "~forkk" "awesome/forkk"
+        , _ilCommand = ICmdPrivmsg
+        , _ilArgs    = ["#channel"]
+        , _ilBody    = Just "test body content"
         }
 
 lineParserTest3 :: Test
 lineParserTest3 = ircLineTestCase "parse line with arguments and body, but no source"
     "PRIVMSG #channel :test body content"
     IRCLine
-        { ilSource  = Nothing
-        , ilCommand = ICmdPrivmsg
-        , ilArgs    = ["#channel"]
-        , ilBody    = Just "test body content"
+        { _ilSource  = Nothing
+        , _ilCommand = ICmdPrivmsg
+        , _ilArgs    = ["#channel"]
+        , _ilBody    = Just "test body content"
         }
 
 lineParserTest4 :: Test
 lineParserTest4 = ircLineTestCase "parse line with source and body, but no arguments"
     ":Forkk!~forkk@awesome/forkk PRIVMSG :test body content"
     IRCLine
-        { ilSource  = Just $ UserSource $ IRCUser "Forkk" "~forkk" "awesome/forkk"
-        , ilCommand = ICmdPrivmsg
-        , ilArgs    = []
-        , ilBody    = Just "test body content"
+        { _ilSource  = Just $ UserSource $ IRCUser "Forkk" "~forkk" "awesome/forkk"
+        , _ilCommand = ICmdPrivmsg
+        , _ilArgs    = []
+        , _ilBody    = Just "test body content"
         }
 
 lineParserTest5 :: Test
 lineParserTest5 = ircLineTestCase "parse line with source and arguments, but no body"
     ":Forkk!~forkk@awesome/forkk PRIVMSG #channel"
     IRCLine
-        { ilSource  = Just $ UserSource $ IRCUser "Forkk" "~forkk" "awesome/forkk"
-        , ilCommand = ICmdPrivmsg
-        , ilArgs    = ["#channel"]
-        , ilBody    = Nothing
+        { _ilSource  = Just $ UserSource $ IRCUser "Forkk" "~forkk" "awesome/forkk"
+        , _ilCommand = ICmdPrivmsg
+        , _ilArgs    = ["#channel"]
+        , _ilBody    = Nothing
         }
 
 -- }}}
