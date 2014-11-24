@@ -30,6 +30,7 @@ data ChatNetwork = ChatNetwork
     , _bNetworkStatus :: Behavior ConnectionStatus
     , _bNetworkUserNick :: Behavior Nick
     , _bNetworkBuffers :: Behavior (I.IxSet ChatBuffer)
+    , _eNetworkCoreEvt :: Event CoreEvent
     , cleanupChatNetwork :: IO ()
     } deriving (Typeable)
 $(makeLenses ''ChatNetwork)
@@ -40,7 +41,7 @@ chatNetwork :: ChatUserName -> ChatCoreNetwork
             -> AcidState ChatCoreState
             -> Event ClientCommand
             -> IO ChatNetwork
-chatNetwork uname network acid eClientCmd =
+chatNetwork uName network acid eClientCmd =
     -- TODO: Manage this thread.
     -- ircConn <- connectIRC "irc.esper.net" (PortNumber 6667) eSendIrcLine
     sync $ do
@@ -112,7 +113,7 @@ chatNetwork uname network acid eClientCmd =
 
           bNetStBuffers <- hold (network ^. netStBuffers) never
           -- Link the bNetStBuffers behavior to the database.
-          cleanNetStBufs <- linkAcidState acid (SetNetworkBuffers uname netName) bNetStBuffers
+          cleanNetStBufs <- linkAcidState acid (SetNetworkBuffers uName netName) bNetStBuffers
 
           let eNickChange = view (ilArgs . _head) <$> eRecvCmd ICmdNick
           -- The initial nick on connect is specified in the first argument of RPL_WELCOME.
@@ -151,8 +152,16 @@ chatNetwork uname network acid eClientCmd =
               eRemoveBuffer = I.deleteIx <$> eSelfPart
 
           let mkBuffer :: ChatBufferName -> Reactive (ChatBufferName, ChatBuffer)
-              mkBuffer bufName = (bufName, ) <$> chatBuffer bufName eBufLine
+              mkBuffer bufName = (bufName, ) <$> chatBuffer uName netName bufName eBufLine
                 where eBufLine = filterE (isForBuffer bufName) eRecvLine
+
+
+          --------------------------------------------------------------------------------
+          -- Core Events
+          --------------------------------------------------------------------------------
+
+          let eCoreEvent = eBufferEvent
+
 
           --------------------------------------------------------------------------------
           -- Client Commands
@@ -191,28 +200,27 @@ chatNetwork uname network acid eClientCmd =
           let eSendPong = pongLine <$> view ilBody <$> eRecvCmd ICmdPing
 
 
-          --------------------------------------------------------------------------------
-          -- Cleanup
-          --------------------------------------------------------------------------------
+        --------------------------------------------------------------------------------
+        -- Cleanup
+        --------------------------------------------------------------------------------
 
-          cleanSendLnPrnt <- listen eSendLine (putStrLn . ("Sent line: "++) . show)
-          cleanRecvLnPrnt <- listen eRecvLine (putStrLn . ("Received line: "++) . show)
-          cleanBufEvtPrnt <- listen eBufferEvent (putStrLn . ("Buffer event: "++) . show)
+        cleanSendLnPrnt <- listen eSendLine (putStrLn . ("Sent line: "++) . show)
+        cleanRecvLnPrnt <- listen eRecvLine (putStrLn . ("Received line: "++) . show)
+        cleanBufEvtPrnt <- listen eBufferEvent (putStrLn . ("Buffer event: "++) . show)
 
-          cleanConStatPrnt <- listen (value bConnStatus) print
-          cleanBufListPrnt <- listen (value bBufferList) (putStrLn . T.unpack . T.unwords . map _bufferName)
+        cleanConStatPrnt <- listen (value bConnStatus) print
 
-          let clean = do
-                cleanNetStBufs
-
-                cleanConStatPrnt
-                cleanRecvLnPrnt
-                cleanSendLnPrnt
-                cleanBufEvtPrnt
-                cleanBufListPrnt
+        let bCleanupBuffers = map cleanupChatBuffer <$> bBufferList
+        let clean = do
+              join (sequence_ <$> sync (sample bCleanupBuffers))
+              cleanNetStBufs
+              cleanConStatPrnt
+              cleanRecvLnPrnt
+              cleanSendLnPrnt
+              cleanBufEvtPrnt
 
         return $ ChatNetwork
-               netName bConnStatus bUserNick bBuffers clean
+               netName bConnStatus bUserNick bBuffers eCoreEvent clean
 
 
 getNetworkInfo :: ChatNetwork -> Behavior ChatNetworkInfo

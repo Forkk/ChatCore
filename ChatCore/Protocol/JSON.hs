@@ -9,9 +9,9 @@ module ChatCore.Protocol.JSON
 import Control.Applicative
 import Control.Concurrent
 import Control.Error
+import Control.Exception
 import Control.Monad
 import Control.Monad.Trans
-import Data.Conduit
 import Data.Aeson
 import Data.Aeson.Types
 import qualified Data.ByteString as B
@@ -22,14 +22,12 @@ import qualified Data.Text as T
 import qualified Data.Text.Lazy.IO as TL
 import qualified Data.Text.Lazy.Encoding as TL
 import Data.Time
-import Data.List
 import FRP.Sodium
 import Network
 import System.IO
 
 import ChatCore.Events
 import ChatCore.Types
-import ChatCore.Util
 import ChatCore.Protocol
 import ChatCore.IRC
 import ChatCore.ChatLog
@@ -84,17 +82,37 @@ pendingClient hand (PendingClientCtx bAuthed) = do
 remoteClient :: Handle -> Event B.ByteString -> Event ()
              -> RemoteClientCtx -> IO RemoteClientInfo
 remoteClient hand eRecvLine eDisconnect
-             (RemoteClientCtx uname eCoreEvt bNetworkList) = do
-    putStrLn ("JSON remote client for user " <> T.unpack uname <> " started.")
+             (RemoteClientCtx uName eCoreEvt bNetworks) = do
+    putStrLn ("JSON remote client for user " <> T.unpack uName <> " started.")
     rec
+      --------------------------------------------------------------------------------
+      -- Client Messages
+      --------------------------------------------------------------------------------
+
       -- To get a stream of client commands, we just parse everything from `eRecvLine`.
       let eClientMsg = filterJust ((hush . decodeClientMsg) <$> eRecvLine)
           eClientCmd = filterJust (filterChatCoreCmd <$> eClientMsg)
           filterChatCoreCmd (ChatCoreCmd cmd) = Just cmd
           filterChatCoreCmd _ = Nothing
-    sync $ listen eClientMsg print
-    sync $ listen eRecvLine print
-    return $ RemoteClientInfo eClientCmd
+
+
+      --------------------------------------------------------------------------------
+      -- Sending
+      --------------------------------------------------------------------------------
+      
+      let eSendCoreMsg = eCoreEvtMsg
+      
+      let eCoreEvtMsg = ChatCoreEvent <$> eCoreEvt
+      
+
+    cleanSendCoreMsg <- sync $ listen eSendCoreMsg $
+                        TL.hPutStrLn hand . TL.decodeUtf8 . encodeCoreMsg
+
+    let clean = do
+          cleanSendCoreMsg
+          hClose hand
+
+    return $ RemoteClientInfo eClientCmd eDisconnect clean
 
 
 -- | An IO action which listens on the given handle for newline-separated
@@ -104,15 +122,14 @@ listenLines :: (B.ByteString -> IO ()) -- ^ Callback for receiving a line.
             -> Handle -> IO ()
 listenLines cbkRecvLine cbkDisconnect hand = inputLoop
   where
-    inputLoop = do
-        -- Wait for input for 3 seconds. If no input is available, make sure the
-        -- handle is still open.
-        isOpen <- hIsOpen hand
-        if isOpen
-           then do
-               B.hGetLine hand >>= cbkRecvLine
-               inputLoop
-           else cbkDisconnect
+    inputLoop =
+      -- Attempt to receive input. If an exception occurs, trigger the
+      -- disconnect callback and stop.
+      catch (B.hGetLine hand >>= cbkRecvLine >> inputLoop)
+            (\e -> do
+               putStrLn ("Remote connection error: "
+                         <> show (e :: IOException))
+               cbkDisconnect)
 
 
 --------------------------------------------------------------------------------
@@ -218,7 +235,7 @@ coreMsgToJSON (LogLinesReply chatNet chatBuf logLines) = object
 
 
 logLineToJSON :: ChatLogLine -> Value
-logLineToJSON (BufLogLine _ lineTime evt) = object $
+logLineToJSON (BufLogLine lineTime evt) = object $
     ("time" .= lineTime) : bufEvtPairs evt
 
 -- }}}
@@ -282,77 +299,3 @@ netEvtPairs (MyNickChange user newNick) =
 -- }}}
 
 -- }}}
-
-{-
--- {{{ Connection Function
-
--- | The `RemoteClient` function.
-connection :: Handle -> HostName -> PortNumber -> RemoteClient ()
-connection handle host port = do
-    liftIO $ putStrLn "JSON connection started."
-    val <- coreEvtOr $ B.hGetLine handle
-    case val of
-         Left ce -> handleCoreEvt handle ce
-         Right msgData -> dropMaybeT $ do
-             msg <- MaybeT $ parseClientMsgM msgData
-             lift $ handleClientMsg handle msg
-    connection handle host port
-  where
-    -- Parses the given message from the client.
-    parseClientMsgM msgData =
-        -- Log the error if the parsing failed. Otherwise, convert the
-        -- Either to a Maybe and pass it on.
-        logParseError $ decodeClientMsg msgData
-    -- If the given argument is a parse error message, log it.
-    logParseError (Right cmd) =
-        return $ Just cmd
-    logParseError (Left errMsg) = do
-        liftIO $ putStrLn ("Error parsing JSON message: " ++ errMsg)
-        return Nothing
-
--- }}}
-
-
-
--- | Handles a message from the client.
-handleClientMsg :: Handle -> JSONClientMessage -> RemoteClient ()
-handleClientMsg _ (ChatCoreCmd cmd) = receivedClientCmd cmd
-
-handleClientMsg handle (GetLogLines netName bufName lineCount startTime) = do
-    uctl <- getUserCtl
-    -- Get the network controller's handle.
-    nctlM <- ucGetNetCtl uctl netName
-    unless (isNothing nctlM) $ do
-        let nctl = fromJust nctlM
-        chatLog <- ncGetChatLog nctl
-        logLines <- genericTake lineCount <$> liftIO (readLog chatLog bufName startTime)
-        -- Send the lines to the user.
-        sendCoreMsg handle $ LogLinesReply netName bufName logLines
-
-
-handleClientMsg handle GetNetworkList = do
-    uctl <- getUserCtl
-    netInfos <- ucGetNetList
-    sendCoreMsg handle $ NetworkListReply netInfos
-
--- | GetNetworkList
--- -- | Requests information about a network.
--- | GetNetworkInfo
--- -- | Requests a list of the given network's buffers.
--- | GetBufferList ChatNetworkName
--- -- | Requests information about a specific buffer in a network.
--- | GetBufferInfo ChatNetworkName ChatBufferName
-
--- | Handles a core event.
-handleCoreEvt :: Handle -> CoreEvent -> RemoteClient ()
-handleCoreEvt handle evt =
-    sendCoreMsg handle $ ChatCoreEvent evt
-
-
--- | Sends a JSONCoreMessage.
-sendCoreMsg :: Handle -> JSONCoreMessage -> RemoteClient ()
-sendCoreMsg handle msg =
-    liftIO $ TL.hPutStrLn handle $ TL.decodeUtf8 $ encodeCoreMsg msg
-
-
--}

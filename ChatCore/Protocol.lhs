@@ -11,20 +11,11 @@ First, the module definition and imports.
 {-# LANGUAGE RankNTypes, MultiParamTypeClasses, FunctionalDependencies #-}
 module ChatCore.Protocol where
 
-import Control.Applicative
-import Control.Concurrent.Actor
-import Control.Concurrent.Async
-import Control.Concurrent.STM
-import Control.Monad
-import Control.Monad.Base
-import Control.Monad.Trans
-import Control.Monad.Trans.Control
-import Control.Monad.Trans.Reader
-import Control.Monad.Trans.Resource
-import Data.Conduit
+import qualified Data.IxSet as I
 import qualified Data.Text as T
 import FRP.Sodium
 
+import ChatCore.ChatNetwork
 import ChatCore.Events
 import ChatCore.Types
 
@@ -104,11 +95,13 @@ events that the client might need to react to.
 data RemoteClientCtx = RemoteClientCtx
     { rcUserName :: ChatUserName
     , rcCoreEvts :: Event CoreEvent
-    , rcNetworks :: Behavior [ChatNetworkInfo]
+    , rcNetworks :: Behavior (I.IxSet ChatNetwork)
     }
 
 data RemoteClientInfo = RemoteClientInfo
     { rcCommands :: Event ClientCommand
+    , rcDisconnect :: Event ()
+    , cleanupRemoteClient :: IO ()
     }
 
 type RemoteClient = RemoteClientCtx -> IO RemoteClientInfo

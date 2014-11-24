@@ -10,7 +10,6 @@ import qualified Data.ByteString as B
 import qualified Data.IxSet as I
 import qualified Data.Map as M
 import Data.Monoid
-import Data.Traversable hiding (mapM, sequence)
 import FRP.Sodium
 import FRP.Sodium.IO
 
@@ -45,15 +44,13 @@ chatUser user acid eNewConn = do
     let uname = user ^. usrStName
     chatUsr <- sync $ do
       rec
-        let eCoreEvent = never
-
         let initNet netSt = chatNetwork uname netSt acid
                             $ filterE (isForNetwork (netSt ^. netStName)) eClientCmd
             eAddNetwork = I.insert <$> executeAsyncIO (initNet <$> eNewNetwork)
 
         bNetworks <- accum I.empty eAddNetwork
         let bNetworkList = I.toList <$> bNetworks
-        bNetworkInfos <- switch (sequenceA <$> map getNetworkInfo <$> bNetworkList)
+        -- bNetworkInfos <- switch (sequenceA <$> map getNetworkInfo <$> bNetworkList)
 
         -- Password
         -- let eSetPassword = never
@@ -61,29 +58,54 @@ chatUser user acid eNewConn = do
         --              executeSyncIO (hashPassword <$> eSetPassword)
 
 
+        let eCoreEvent = switchMergeWith (view eNetworkCoreEvt) bNetworkList
+
+
         --------------------------------------------------------------------------------
         -- Remote Clients
         --------------------------------------------------------------------------------
 
-        let clientCtx = RemoteClientCtx uname eCoreEvent bNetworkInfos
+        let clientCtx = RemoteClientCtx uname eCoreEvent bNetworks
 
         -- Event to add new clients.
         eNewClient <- tagIds $ executeAsyncIO (($ clientCtx) <$> eNewConn)
-        let eAddClient = uncurry M.insert <$> eNewClient
+        let eDoAddClient = uncurry M.insert <$> eNewClient
+            eDoRemoveClient = M.delete <$> eClientDisconnectId
 
         -- Add new clients to the list.
-        bClientMap <- accum M.empty eAddClient
+        bClientMap <- accum M.empty (eDoAddClient <> eDoRemoveClient)
         let bClients = map snd <$> M.toList <$> bClientMap
 
         -- Receive client commands from all clients.
-        let eClientCmd = switchE (foldr merge never <$> map rcCommands <$> bClients)
+        let eClientCmd = switchMergeWith rcCommands bClients
         
-        cleanNCPrint <- listen (fst <$> eNewClient) $ \cid ->
-                              putStrLn ("New client with ID: " <> show cid)
+        -- Remote client disconnect events.
+        let eClientDisconnectId :: Event Int
+            eClientDisconnectId = fst <$> eClientDisconnect
+            eClientDisconnect = switchMergeWith mkDCEvent (M.toList <$> bClientMap)
+            mkDCEvent (cid, client) = const (cid, client) <$> rcDisconnect client
+      
+      
+      --------------------------------------------------------------------------------
+      -- Listens and Cleanup
+      --------------------------------------------------------------------------------
+        
+      cleanNCPrint <- listen (fst <$> eNewClient) $ \cid ->
+                                putStrLn ("New client with ID: " <> show cid)
+
+      cleanClientDC <- listen eClientDisconnect $ \(cid, client) -> do
+                                putStrLn ("Client " <> show cid <> " disconnected.")
+                                -- FIXME: If the client's cleanup action calls sync,
+                                -- this will lock up.
+                                cleanupRemoteClient client
+
+      -- FIXME: Removing this line causes core events to not be received by clients.
+      _ <- listen eCoreEvent print
 
       let bCleanupNetworks = map cleanupChatNetwork <$> bNetworkList
           cleanup = do
               cleanNCPrint
+              cleanClientDC
               -- Run cleanup actions for all the networks.
               join (sequence_ <$> sync (sample bCleanupNetworks))
       return $ ChatUser uname bNetworks bClients cleanup

@@ -24,12 +24,13 @@ import Text.Printf
 
 import ChatCore.ChatLog.Line
 
+
 -- | Identifier for log files.
 data LogFileId = LogFileId
     { lfDay     :: Int
     , lfMonth   :: Int
     , lfYear    :: Integer
-    } deriving (Show, Eq)
+    } deriving (Show, Read, Eq)
 
 instance Ord LogFileId where
     a <= b =

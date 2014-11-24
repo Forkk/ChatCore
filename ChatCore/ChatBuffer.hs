@@ -5,10 +5,12 @@ import Control.Lens
 import Control.Monad
 import qualified Data.IxSet as I
 import qualified Data.Text as T
+import Data.Time
 import Data.Monoid
 import Data.Typeable
 import FRP.Sodium
 
+import ChatCore.ChatLog
 import ChatCore.Events
 import ChatCore.IRC
 import ChatCore.IRC.FRP
@@ -20,19 +22,21 @@ data ChatUserStatus = ChatOp | ChatVoice | ChatNormal
 
 data ChatBuffer = ChatBuffer
     { _bufferName :: ChatBufferName
+    , _chatBufLog :: BufferLog
     -- | An event stream of this buffer's `BufferEvent`s.
     , _bufferEvent :: Event BufferEvent
     -- | A behavior containing a list of the buffer's users.
     , _bufferUsers :: Behavior [Nick]
+    , cleanupChatBuffer :: IO ()
     } deriving (Typeable)
 $(makeLenses ''ChatBuffer)
 
 
 -- | A chat buffer with the given input and output events.
-chatBuffer :: ChatBufferName
+chatBuffer :: ChatUserName -> ChatNetworkName -> ChatBufferName
            -> Event IRCLine -- ^ Buffer-related IRC messages.
            -> Reactive ChatBuffer
-chatBuffer bufName eRecvLine = do
+chatBuffer uName netName bufName eRecvLine = do
   rec
     -- Function which creates an event which receives IRC lines with the given command.
     let eRecvCmd :: IRCCommand -> Event IRCLine
@@ -77,7 +81,21 @@ chatBuffer bufName eRecvLine = do
         eNamesContinued = gate eNamesList bReceivingNames
         eNamesEnd = void $ eRecvCmd $ ICmdOther "366"
     
-  return $ ChatBuffer bufName eBufEvent bUsers
+    
+    --------------------------------------------------------------------------------
+    -- Logging
+    --------------------------------------------------------------------------------
+
+    -- The chat log for this buffer.
+    let bufLog = mkBufferLog defLogPath $ BufferLogId uName netName bufName
+
+  -- Write buffer events to the log.
+  cleanupLogListen <- listen eBufEvent $
+                      \evt -> do
+                        now <- getCurrentTime
+                        writeBufferLog bufLog $ BufLogLine now evt
+
+  return $ ChatBuffer bufName bufLog eBufEvent bUsers cleanupLogListen
 
 
 
