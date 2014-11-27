@@ -83,7 +83,7 @@ bufLogIdPath logId = uName </> netName </> bufName
 
 -- | Gets the path to the buffer log for the given ID.
 bufLogPath :: BufferLog -> FilePath
-bufLogPath bufLog = bufLogIdPath bufLog </> view logRootPath bufLog
+bufLogPath bufLog = view logRootPath bufLog </> bufLogIdPath bufLog
 
 
 --------------------------------------------------------------------------------

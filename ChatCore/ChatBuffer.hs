@@ -4,9 +4,10 @@ import Control.Applicative
 import Control.Lens
 import Control.Monad
 import qualified Data.IxSet as I
+import Data.List
+import Data.Monoid
 import qualified Data.Text as T
 import Data.Time
-import Data.Monoid
 import Data.Typeable
 import FRP.Sodium
 
@@ -56,13 +57,17 @@ chatBuffer uName netName bufName eRecvLine = do
     -- Behavior with a list of users in the buffer.
     bUsers <- accum [] (eAddUser <> eRemoveUser <> eClearUsers <> eAddUsers)
     
-    let eJoin = filterJust (preview (_UserSource . iuNick)
-                            <$> filterSource (eRecvCmd ICmdJoin))
-        ePart = filterJust (preview (_UserSource . iuNick)
-                            <$> filterSource (eRecvCmd ICmdPart))
-    
-    let eAddUser = (:) <$> eJoin
-        eRemoveUser = (\nick -> filter (/=nick)) <$> ePart
+    let eJoin = UserJoin <$> filterJust (preview _UserSource
+                                         <$> filterSource (eRecvCmd ICmdJoin))
+
+        ePart = filterJust $ flip fmap (eRecvCmd ICmdPart) $
+                \line -> UserPart
+                         <$> (line ^? ilSource . _Just . _UserSource)
+                         <*> pure (line ^. ilBody)
+
+    let eAddUser = (:) <$> _iuNick <$> joiningUser <$> eJoin
+        eRemoveUser = (\nick -> filter (/=nick))
+                      <$> _iuNick <$> partingUser <$> ePart
         eClearUsers = const <$> eNamesBegin
         eAddUsers = (++) <$> eNamesContinued
 
@@ -134,6 +139,15 @@ isForBuffer _ (IRCLine { _ilCommand = ICmdQuit }) = True
 isForBuffer _ (IRCLine { _ilCommand = ICmdNick }) = True
 
 isForBuffer _ _ = False
+
+
+--------------------------------------------------------------------------------
+-- API Functions
+--------------------------------------------------------------------------------
+
+getBufLogLines :: ChatBuffer -> Integer -> UTCTime -> IO [ChatLogLine]
+getBufLogLines buf lineCount startTime =
+    genericTake lineCount <$> readBufferLog (buf ^. chatBufLog) startTime
 
 
 --------------------------------------------------------------------------------

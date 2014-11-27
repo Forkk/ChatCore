@@ -29,11 +29,11 @@ data BufferEvent
         , noticeContent :: T.Text
         }
     -- | An event for when a user joins a channel.
-    | UserJoin IRCUser
+    | UserJoin { joiningUser :: IRCUser }
     -- | An event for when a user leaves a channel.
-    | UserPart IRCUser (Maybe T.Text)
+    | UserPart { partingUser :: IRCUser, partMessage :: Maybe T.Text }
     -- | An event for when a user quits from a channel.
-    | UserQuit IRCUser (Maybe T.Text)
+    | UserQuit { quittingUser :: IRCUser, quitMessage :: Maybe T.Text }
     -- | An event for when a user changes their nick.
     | OtherNickChange IRCUser T.Text
     deriving (Show, Read, Eq)

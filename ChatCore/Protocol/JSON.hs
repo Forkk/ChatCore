@@ -10,6 +10,7 @@ import Control.Applicative
 import Control.Concurrent
 import Control.Error
 import Control.Exception
+import Control.Lens hiding ((.=))
 import Control.Monad
 import Control.Monad.Trans
 import Data.Aeson
@@ -23,9 +24,11 @@ import qualified Data.Text.Lazy.IO as TL
 import qualified Data.Text.Lazy.Encoding as TL
 import Data.Time
 import FRP.Sodium
+import FRP.Sodium.IO
 import Network
 import System.IO
 
+import ChatCore.ChatBuffer
 import ChatCore.Events
 import ChatCore.Types
 import ChatCore.Protocol
@@ -90,21 +93,44 @@ remoteClient hand eRecvLine eDisconnect
       --------------------------------------------------------------------------------
 
       -- To get a stream of client commands, we just parse everything from `eRecvLine`.
-      let eClientMsg = filterJust ((hush . decodeClientMsg) <$> eRecvLine)
+      let eClientMsg :: Event JSONClientMessage
+          eClientMsg = filterJust ((hush . decodeClientMsg) <$> eRecvLine)
+
+      let eClientCmd :: Event ClientCommand
           eClientCmd = filterJust (filterChatCoreCmd <$> eClientMsg)
           filterChatCoreCmd (ChatCoreCmd cmd) = Just cmd
           filterChatCoreCmd _ = Nothing
 
+      
+      -- An event containing log events requested by the client.
+      let eLogLineMsgs :: Event JSONCoreMessage
+          eLogLineMsgs = executeAsyncIO (getRequestedLogs <$> eLogReqBufs)
+          getRequestedLogs (netName, buf, lcount, stime) =
+              LogLinesReply netName bufName <$> getBufLogLines buf lcount stime
+            where
+              bufName = buf ^. bufferName
+          
+      -- Log line requests.
+      let eLogReqs :: Event (ChatNetworkName, ChatBufferName, Integer, UTCTime)
+          eLogReqs = filterJust (mkLogReq <$> eClientMsg)
+          mkLogReq (GetLogLines netName bufName lcount startTime) =
+              Just (netName, bufName, lcount, startTime)
+          mkLogReq _ = Nothing
+      
+      -- Snapshots the networks specified in the given log requests.
+      let eLogReqBufs :: Event (ChatNetworkName, ChatBuffer, Integer, UTCTime)
+          eLogReqBufs = filterJust $ execute (lookupBufs <$> eLogReqs)
+          lookupBufs (netName, bufName, lineCount, startTime) = runMaybeT $ do
+              buf <- MaybeT $ getUserBuf bNetworks netName bufName
+              return (netName, buf, lineCount, startTime)
 
       --------------------------------------------------------------------------------
       -- Sending
       --------------------------------------------------------------------------------
       
-      let eSendCoreMsg = eCoreEvtMsg
-      
+      let eSendCoreMsg = eCoreEvtMsg <> eLogLineMsgs
       let eCoreEvtMsg = ChatCoreEvent <$> eCoreEvt
       
-
     cleanSendCoreMsg <- sync $ listen eSendCoreMsg $
                         TL.hPutStrLn hand . TL.decodeUtf8 . encodeCoreMsg
 
@@ -173,6 +199,7 @@ data JSONCoreMessage
 
     -------- Core Command --------
     | ChatCoreEvent CoreEvent
+    deriving (Show)
 
 
 -- {{{ JSON
@@ -232,6 +259,7 @@ coreMsgToJSON (LogLinesReply chatNet chatBuf logLines) = object
     , "event"       .= ("log-lines" :: T.Text)
     , "log-lines"   .= map logLineToJSON logLines
     ]
+coreMsgToJSON _ = object []
 
 
 logLineToJSON :: ChatLogLine -> Value

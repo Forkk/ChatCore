@@ -1,6 +1,7 @@
 module ChatCore.Util.FRP where
 
 import Control.Applicative
+import Control.Lens
 import FRP.Sodium
 
 
@@ -28,3 +29,9 @@ switchMerge = switchMergeWith id
 -- | Like `switchMerge`, but applies a function to the list elements first.
 switchMergeWith :: (a -> Event b) -> Behavior [a] -> Event b
 switchMergeWith func behs = switchE (foldr merge never <$> map func <$> behs)
+
+
+-- | Like the `over` function from @Lens@, but works on functors.
+overF :: (Functor f) => Iso s t a b -> (f a -> f b) -> f s -> f t
+overF i = over (mapping i)
+-- TODO: Move the above function into a separate lens utility module.

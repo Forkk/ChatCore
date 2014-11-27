@@ -11,11 +11,15 @@ First, the module definition and imports.
 {-# LANGUAGE RankNTypes, MultiParamTypeClasses, FunctionalDependencies #-}
 module ChatCore.Protocol where
 
+import Control.Applicative
+import Control.Lens
+import Control.Monad.Trans.Maybe
 import qualified Data.IxSet as I
 import qualified Data.Text as T
 import FRP.Sodium
 
 import ChatCore.ChatNetwork
+import ChatCore.ChatBuffer
 import ChatCore.Events
 import ChatCore.Types
 
@@ -105,5 +109,37 @@ data RemoteClientInfo = RemoteClientInfo
     }
 
 type RemoteClient = RemoteClientCtx -> IO RemoteClientInfo
+
+\end{code}
+
+
+Utility Functions
+=================
+
+Finally, some useful utility functions for client code to use.
+
+\begin{code}
+
+-- | Reactive action which gets the network with the given name.
+getUserNet :: Behavior (I.IxSet ChatNetwork)
+           -> ChatNetworkName
+           -> Reactive (Maybe ChatNetwork)
+getUserNet bNets netName =
+    (I.getOne . I.getEQ netName) <$> sample bNets
+
+-- | Reactive action which gets the buffer with the given network and buffer
+-- name.
+getUserBuf :: Behavior (I.IxSet ChatNetwork)
+           -> ChatNetworkName -> ChatBufferName
+           -> Reactive (Maybe ChatBuffer)
+getUserBuf bNets netName bufName =
+    runMaybeT $ do
+      net <- MaybeT $ getUserNet bNets netName
+      MaybeT $ getNetBuf net bufName
+
+-- | Reactive action which gets the buffer with the given name.
+getNetBuf :: ChatNetwork -> ChatBufferName -> Reactive (Maybe ChatBuffer)
+getNetBuf network bufName =
+    (I.getOne . I.getEQ bufName) <$> sample (network ^. bNetworkBuffers)
 
 \end{code}

@@ -51,7 +51,7 @@ data ChatNetworkInfo = ChatNetworkInfo
     { _networkName :: ChatNetworkName
     , _networkStatus :: ConnectionStatus
     , _networkUserNick :: Nick
-    }
+    } deriving (Show)
 $(makeClassy ''ChatNetworkInfo)
 
 instance FromJSON ChatNetworkInfo where
@@ -74,4 +74,4 @@ data ChatBufferInfo = ChatBufferInfo
     -- , _biType :: ChatBufferType
     , _biActive :: Bool -- ^ True if the user is in this channel.
     , _biUsers :: [Nick]
-    }
+    } deriving (Show)
