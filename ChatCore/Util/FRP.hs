@@ -2,6 +2,7 @@ module ChatCore.Util.FRP where
 
 import Control.Applicative
 import Control.Lens
+import Data.Traversable (sequenceA)
 import FRP.Sodium
 
 
@@ -12,6 +13,9 @@ tagIds eInput = do
     bCount <- accum 0 (const (+1) <$> eInput)
     return $ snapshot tag eInput bCount
 
+
+switchList :: Behavior [Behavior a] -> Reactive (Behavior [a])
+switchList = switchWith sequenceA
 
 -- | Switches with the given function.
 switchWith :: (a -> Behavior b) -> Behavior a -> Reactive (Behavior b)

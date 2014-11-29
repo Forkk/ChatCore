@@ -55,13 +55,13 @@ data ChatCoreBuffer
         }
     -- Other type of buffer.
     | ChatCoreOtherBuffer
-        { _ccChatBufferName :: ChatBufferName }
+        { _ccBufferName :: ChatBufferName }
     deriving (Eq, Ord, Show, Read, Typeable)
 $(deriveSafeCopy 0 'base ''ChatCoreBuffer)
 $(makeLenses ''ChatCoreBuffer)
 
 instance Indexable ChatCoreBuffer where
-    empty = ixSet [ ixFun ((:[]) . _ccChatBufferName) ]
+    empty = ixSet [ ixFun ((:[]) . _ccBufferName) ]
 
 
 -- | Holds information about an IRC netSt in Chat Core.
@@ -155,8 +155,7 @@ getUsers :: Query ChatCoreState [ChatCoreUser]
 getUsers = I.toList <$> _chatCoreUsers <$> ask
 
 -- | Gets the user with the given username.
-getUser :: UserName ->
-    Query ChatCoreState (Maybe ChatCoreUser)
+getUser :: UserName -> Query ChatCoreState (Maybe ChatCoreUser)
 getUser uName = do
     s <- ask
     return $ getOne $ (s ^. chatCoreUsers) @= uName
@@ -169,21 +168,18 @@ addUser uName passHash =
 
 -- | Adds the given netSt to the given user.
 -- If a netSt with the same ID exists, it will be replaced.
-addUserNetwork :: ChatCoreNetwork ->
-    UserName -> Update ChatCoreState ()
-addUserNetwork net = updateUserEvt (usrStNetworks %~ insert net)
+addUserNetwork :: UserName -> ChatCoreNetwork -> Update ChatCoreState ()
+addUserNetwork uName net = updateUserEvt uName (usrStNetworks %~ insert net)
 
 -- | Sets the user's password to the given password hash.
-setUserPassword :: B.ByteString ->
-    UserName -> Update ChatCoreState ()
-setUserPassword passHash = updateUserEvt (usrStPassword .~ passHash)
+setUserPassword :: UserName -> B.ByteString -> Update ChatCoreState ()
+setUserPassword uName passHash = updateUserEvt uName (usrStPassword .~ passHash)
 
 -- {{{ Utility Functions
 
 -- | Apply a function to the user with the given name.
-updateUserEvt :: (ChatCoreUser -> ChatCoreUser) ->
-    UserName -> Update ChatCoreState ()
-updateUserEvt func uName =
+updateUserEvt :: UserName -> (ChatCoreUser -> ChatCoreUser) -> Update ChatCoreState ()
+updateUserEvt uName func =
     chatCoreUsers %= \users ->
         let user = fromJust $ getOne (users @= uName)
          in updateIx uName (func user) users
@@ -195,7 +191,7 @@ updateUserEvt func uName =
 -- {{{ User Network Events
 
 -- | Gets a list of all the given user's netSts.
-getUserNetworks :: UserName -> Query ChatCoreState [ChatCoreNetwork]
+getUserNetworks :: ChatUserName -> Query ChatCoreState [ChatCoreNetwork]
 getUserNetworks uName = do
     userM <- getUser uName
     case userM of
@@ -204,36 +200,36 @@ getUserNetworks uName = do
          Nothing -> error "Tried to get netSt list for nonexistant user."
 
 -- | Gets the netSt with the given netSt name and user name.
-getUserNetwork :: ChatNetworkName -> UserName -> Query ChatCoreState (Maybe ChatCoreNetwork)
-getUserNetwork netName uName = runMaybeT $ do
+getUserNetwork :: ChatUserName -> ChatNetworkName -> Query ChatCoreState (Maybe ChatCoreNetwork)
+getUserNetwork uName netName = runMaybeT $ do
     user <- MaybeT $ getUser uName
     MaybeT $ return $ getOne $ (user ^. usrStNetworks) @= netName
 
 
 -- | Sets the possible nicks to use on the given netSt.
-setNetworkNicks :: [Nick] ->
-    ChatNetworkName -> UserName -> Update ChatCoreState ()
-setNetworkNicks nicks =
-    updateNetworkEvt (netStNicks .~ nicks)
+setNetworkNicks :: ChatUserName -> ChatNetworkName
+                -> [Nick] -> Update ChatCoreState ()
+setNetworkNicks uName netName nicks =
+    updateNetworkEvt uName netName (netStNicks .~ nicks)
 
 -- | Sets the list of servers to connect to on the given netSt.
-setNetworkServers :: [ChatCoreNetServer] ->
-    ChatNetworkName -> UserName -> Update ChatCoreState ()
-setNetworkServers servers =
-    updateNetworkEvt (netStServers .~ servers)
+setNetworkServers :: ChatUserName -> ChatNetworkName
+                  -> [ChatCoreNetServer] -> Update ChatCoreState ()
+setNetworkServers uName netName servers =
+    updateNetworkEvt uName netName (netStServers .~ servers)
 
-setNetworkBuffers :: UserName -> ChatNetworkName 
+setNetworkBuffers :: ChatUserName -> ChatNetworkName 
                   -> IxSet ChatCoreBuffer
                   -> Update ChatCoreState ()
-setNetworkBuffers user net buffers =
-    updateNetworkEvt (netStBuffers .~ buffers) net user
+setNetworkBuffers uName netName buffers =
+    updateNetworkEvt uName netName (netStBuffers .~ buffers)
 
 -- | Sets the given channel buffer's active flag to the given value.
 -- Ignored if the given buffer name is not a channel buffer.
-setChanBufferActive :: Bool ->
-    ChatBufferName -> ChatNetworkName -> UserName -> Update ChatCoreState ()
-setChanBufferActive active =
-    updateBufferEvt setActive
+setChanBufferActive :: ChatUserName -> ChatNetworkName -> ChatBufferName
+                    -> Bool -> Update ChatCoreState ()
+setChanBufferActive uName netName bufName active =
+    updateBufferEvt uName netName bufName setActive
   where
     setActive (ChatCoreChannelBuffer n _) =
         ChatCoreChannelBuffer n active
@@ -243,17 +239,17 @@ setChanBufferActive active =
 -- {{{ Utility Functions
 
 -- | Apply a function to the netSt with the given name.
-updateNetworkEvt :: (ChatCoreNetwork -> ChatCoreNetwork) ->
-    ChatNetworkName -> UserName -> Update ChatCoreState ()
-updateNetworkEvt func uName netName = flip updateUserEvt uName $
+updateNetworkEvt :: ChatUserName -> ChatNetworkName
+                 -> (ChatCoreNetwork -> ChatCoreNetwork) -> Update ChatCoreState ()
+updateNetworkEvt uName netName func = updateUserEvt uName $
     usrStNetworks %~ \nets ->
         let net = fromJust $ getOne (nets @= netName)
          in updateIx netName (func net) nets
 
 -- | Apply a function to the buffer with the given name.
-updateBufferEvt :: (ChatCoreBuffer -> ChatCoreBuffer) ->
-    ChatBufferName -> ChatNetworkName -> UserName -> Update ChatCoreState ()
-updateBufferEvt func bufName = updateNetworkEvt $
+updateBufferEvt :: ChatUserName -> ChatNetworkName -> ChatBufferName
+                -> (ChatCoreBuffer -> ChatCoreBuffer) -> Update ChatCoreState ()
+updateBufferEvt uName netName bufName func = updateNetworkEvt uName netName $
     netStBuffers %~ \bufs ->
         let buf = fromJust $ getOne (bufs @= bufName)
          in updateIx bufName (func buf) bufs

@@ -15,6 +15,7 @@ import ChatCore.ChatLog
 import ChatCore.Events
 import ChatCore.IRC
 import ChatCore.IRC.FRP
+import ChatCore.State
 import ChatCore.Types
 
 data ChatUserStatus = ChatOp | ChatVoice | ChatNormal
@@ -28,6 +29,8 @@ data ChatBuffer = ChatBuffer
     , _bufferEvent :: Event BufferEvent
     -- | A behavior containing a list of the buffer's users.
     , _bufferUsers :: Behavior [Nick]
+    -- | True if the buffer is active (joined the channel).
+    , _bufferActive :: Behavior Bool
     , cleanupChatBuffer :: IO ()
     } deriving (Typeable)
 $(makeLenses ''ChatBuffer)
@@ -35,9 +38,11 @@ $(makeLenses ''ChatBuffer)
 
 -- | A chat buffer with the given input and output events.
 chatBuffer :: ChatUserName -> ChatNetworkName -> ChatBufferName
+           -> Bool -- ^ True if the buffer is active.
+           -> Behavior Nick -- ^ The user's nick.
            -> Event IRCLine -- ^ Buffer-related IRC messages.
            -> Reactive ChatBuffer
-chatBuffer uName netName bufName eRecvLine = do
+chatBuffer uName netName bufName bufActive bNick eRecvLine = do
   rec
     -- Function which creates an event which receives IRC lines with the given command.
     let eRecvCmd :: IRCCommand -> Event IRCLine
@@ -49,6 +54,11 @@ chatBuffer uName netName bufName eRecvLine = do
     -- Buffer events derived directly from eRecvLine.
     let eLineBufEvent = filterJust (bufEventForLine <$> eRecvLine)
     
+    let eSelfJoin = filterFirstArg $ filterSelfSource bNick $ eRecvCmd ICmdJoin
+        eSelfPart = filterFirstArg $ filterSelfSource bNick $ eRecvCmd ICmdPart
+
+    bActive <- hold bufActive (  (const True  <$> eSelfJoin)
+                              <> (const False <$> eSelfPart))
     
     --------------------------------------------------------------------------------
     -- Users
@@ -100,7 +110,7 @@ chatBuffer uName netName bufName eRecvLine = do
                         now <- getCurrentTime
                         writeBufferLog bufLog $ BufLogLine now evt
 
-  return $ ChatBuffer bufName bufLog eBufEvent bUsers cleanupLogListen
+  return $ ChatBuffer bufName bufLog eBufEvent bUsers bActive cleanupLogListen
 
 
 
@@ -148,6 +158,14 @@ isForBuffer _ _ = False
 getBufLogLines :: ChatBuffer -> Integer -> UTCTime -> IO [ChatLogLine]
 getBufLogLines buf lineCount startTime =
     genericTake lineCount <$> readBufferLog (buf ^. chatBufLog) startTime
+
+
+-- | Turns a `ChatBuffer` into a `Behavior ChatCoreBuffer` for storing in the
+-- database.
+bufStateBehavior :: ChatBuffer -> Behavior ChatCoreBuffer
+bufStateBehavior buf = ChatCoreChannelBuffer
+                       <$> pure (view bufferName buf)
+                       <*> view bufferActive buf
 
 
 --------------------------------------------------------------------------------

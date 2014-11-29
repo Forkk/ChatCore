@@ -27,9 +27,9 @@ module ChatCore.State (
     , ccBufferName
     , ccBufferActive
     
-    -- * Behavior Stuff
-    , holdAcidState
-    , linkAcidState
+    -- * FRP Stuff
+    , execAcidUpdates
+    , executeAcidQuery
 
     -- * Core
 
@@ -41,10 +41,10 @@ module ChatCore.State (
     , setUserPassword
 
     -- * Network
-    , getUserNetworks
+    , getNetworks
     , getNetwork
 
-    , addUserNetwork
+    , addNetwork
     
     , SetNetworkBuffers (..)
     ) where
@@ -59,6 +59,7 @@ import qualified Data.IxSet as I
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
 import FRP.Sodium
+import FRP.Sodium.IO
 
 import ChatCore.Types
 import ChatCore.State.Internal hiding
@@ -70,50 +71,27 @@ import ChatCore.State.Internal hiding
     )
 
 
--- | Creates a new behavior based on the given acid state events.
--- This works similarly to `hold`, taking new values from the given input
--- stream. The initial value will be supplied by the given "getter" event, and
--- the given "setter" event will be used to update the values in the database.
--- The function returns a tuple with the resulting behavior and a function that
--- should be called to clean up.
-holdAcidState :: ( QueryEvent getEvt, MethodState getEvt ~ MethodState setEvt
-                 , UpdateEvent setEvt, MethodResult setEvt ~ () )
-              => AcidState (EventState getEvt)
-              -> getEvt
-              -> (EventResult getEvt -> setEvt)
-              -> Event (EventResult getEvt)
-              -> IO (Behavior (EventResult getEvt), IO ())
-holdAcidState acid getEvt setEvt event = do
-    initVal <- query' acid getEvt
-    sync $ do
-        bState <- hold initVal event
-        cleanup <- listen (value bState) (update' acid . setEvt)
-        return (bState, cleanup)
-
--- | Links the given behavior to the given acid state event.
--- This means the event function will be called each time the behavior changes.
--- This function returns a cleanup IO action.
-linkAcidState :: ( UpdateEvent event
-                 , EventResult event ~ () )
-              => AcidState (EventState event)
-              -> (input -> event)
-              -> Behavior input
-              -> Reactive (IO ())
-linkAcidState acid updateFunc behavior =
-    listen (updates behavior) (update' acid . updateFunc)
-
--- {{{ User State Behaviors
-
--- TODO: Maybe automate some of this with Template Haskell.
-
--- }}}
-
--- {{{ Network State Behaviors
+-- | Executes `UpdateEvent`s from the given FRP event stream.
+execAcidUpdates :: (UpdateEvent evt, EventResult evt ~ ()) =>
+                    AcidState (EventState evt)
+                 -> Event evt
+                 -> Reactive (IO ())
+execAcidUpdates acid eUpdate =
+    listen eUpdate $ update' acid
 
 
--- }}}
+-- | An FRP event stream of the results of the given queries.
+executeAcidQuery :: (QueryEvent evt) =>
+                    AcidState (EventState evt)
+                 -> Event evt
+                 -> Event (EventResult evt)
+executeAcidQuery acid eQuery =
+    executeAsyncIO (query' acid <$> eQuery)
 
--- {{{ Functions
+
+--------------------------------------------------------------------------------
+-- Users
+--------------------------------------------------------------------------------
 
 -- | Gets a list of all users.
 getUsers :: (MonadIO m) =>
@@ -144,17 +122,16 @@ setUserPassword :: (MonadIO m) =>
                 -> UserName -> T.Text -> m ()
 setUserPassword acid uName password = do
     passHash <- hashUserPassword password
-    update' acid $ SetUserPassword passHash uName
+    update' acid $ SetUserPassword uName passHash
 
 
 hashUserPassword :: (MonadIO m) => T.Text -> m B.ByteString
 hashUserPassword password = liftIO $ makePassword (T.encodeUtf8 password) 16
 
--- }}}
 
--- }}}
-
--- {{{ `ChatCoreNetwork` Actions
+--------------------------------------------------------------------------------
+-- Networks
+--------------------------------------------------------------------------------
 
 -- | Gets the the current networks in a `MonadNetworkState` context.
 getNetwork :: (MonadIO m) =>
@@ -165,25 +142,23 @@ getNetwork acid uName netName =
     query' acid $ GetUserNetwork uName netName
 
 -- | Gets a list of the user's networks.
-getUserNetworks :: (MonadIO m) =>
-                   AcidState ChatCoreState
-                -> ChatUserName
-                -> m [ChatCoreNetwork]
-getUserNetworks acid uName =
+getNetworks :: (MonadIO m) =>
+               AcidState ChatCoreState
+            -> ChatUserName
+            -> m [ChatCoreNetwork]
+getNetworks acid uName =
     query' acid $ GetUserNetworks uName
 
 
-addUserNetwork :: (MonadIO m) =>
-                  AcidState ChatCoreState
-               -> ChatUserName
-               -> ChatNetworkName
-               -> [Nick] -> [ChatCoreNetServer] -> m ()
-addUserNetwork acid uName netName nicks servs =
-    update' acid $ AddUserNetwork ChatCoreNetwork
+addNetwork :: (MonadIO m) =>
+              AcidState ChatCoreState
+           -> ChatUserName
+           -> ChatNetworkName
+           -> [Nick] -> [ChatCoreNetServer] -> m ()
+addNetwork acid uName netName nicks servs =
+    update' acid $ AddUserNetwork uName ChatCoreNetwork
                 { _netStName = netName
                 , _netStNicks = nicks
                 , _netStServers = servs
                 , _netStBuffers = I.empty
-                } uName
-
--- }}}
+                }

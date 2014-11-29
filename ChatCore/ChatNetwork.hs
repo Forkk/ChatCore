@@ -20,6 +20,7 @@ import ChatCore.IRC
 import ChatCore.IRC.FRP
 import ChatCore.State
 import ChatCore.Types
+import ChatCore.Util.FRP
 
 
 -- | The @ChatNetwork@ object holds the state information for a particular IRC network.
@@ -47,6 +48,9 @@ chatNetwork uName network acid eClientCmd =
     sync $ do
         let netName = network ^. netStName
         rec
+          (eInit', pushInit) <- newEvent
+          let eInit = once eInit'
+
           --------------------------------------------------------------------------------
           -- IRC Connection
           --------------------------------------------------------------------------------
@@ -92,42 +96,14 @@ chatNetwork uName network acid eClientCmd =
           let eRecvCmd :: IRCCommand -> Event IRCLine
               eRecvCmd = filterCmd eRecvLine
           
-          -- Filters only IRC lines where the source is the current user.
-          let filterSelfSource :: Event IRCLine -> Event IRCLine
-              filterSelfSource eLine =
-                  filterJust (snapshot doFilter eLine bUserNick)
-                where
-                  doFilter line nick =
-                      if srcNick line == Just nick
-                         then Just line
-                         else Nothing
-                  srcNick = preview (ilSource . _Just . _UserSource . iuNick)
-
-          -- Filters out the first argument of the given lines.
-          let filterFirstArg :: Event IRCLine -> Event T.Text
-              filterFirstArg eLine = filterJust (preview (ilArgs . _head) <$> eLine)
-
-          --------------------------------------------------------------------------------
-          -- State
-          --------------------------------------------------------------------------------
-
-          bNetStBuffers <- hold (network ^. netStBuffers) never
-          -- Link the bNetStBuffers behavior to the database.
-          cleanNetStBufs <- linkAcidState acid (SetNetworkBuffers uName netName) bNetStBuffers
-
-          let eNickChange = view (ilArgs . _head) <$> eRecvCmd ICmdNick
-          -- The initial nick on connect is specified in the first argument of RPL_WELCOME.
-          let eInitialNick = view (ilArgs ._head) <$> eRecvCmd (ICmdOther "001")
-
-          bUserNick :: Behavior Nick <- hold "" (eNickChange <> eInitialNick)
-
 
           --------------------------------------------------------------------------------
           -- Buffers
           --------------------------------------------------------------------------------
 
-          bBuffers <- accum I.empty (eAddBuffer <> eRemoveBuffer)
-          let bBufferList = I.toList <$> bBuffers
+          bBuffers <- accum I.empty (eDoAddNewBuf <> eDoAddInitBuf)
+          let bBufferList :: Behavior [ChatBuffer]
+              bBufferList = I.toList <$> bBuffers
 
           -- Buffer Events
           let eBufferEvent :: Event CoreEvent
@@ -145,15 +121,56 @@ chatNetwork uName network acid eClientCmd =
 
 
           -- Find join events involving us and use them to add buffers.
-          let eSelfJoin = filterFirstArg $ filterSelfSource $ eRecvCmd ICmdJoin
-              eSelfPart = filterFirstArg $ filterSelfSource $ eRecvCmd ICmdPart
+          let eSelfJoin = filterFirstArg $ filterSelfSource bUserNick $ eRecvCmd ICmdJoin
 
-          let eAddBuffer = uncurry I.updateIx <$> execute (mkBuffer <$> eSelfJoin)
-              eRemoveBuffer = I.deleteIx <$> eSelfPart
+          let eDoAddNewBuf = doAddBuf $ filterJust $ execute (mkNewBuf <$> eSelfJoin)
+              eDoAddInitBuf = doAddBuf eInitBuf
 
-          let mkBuffer :: ChatBufferName -> Reactive (ChatBufferName, ChatBuffer)
-              mkBuffer bufName = (bufName, ) <$> chatBuffer uName netName bufName eBufLine
-                where eBufLine = filterE (isForBuffer bufName) eRecvLine
+          let doAddBuf :: Event ChatCoreBuffer
+                       -> Event (I.IxSet ChatBuffer -> I.IxSet ChatBuffer)
+              doAddBuf eBuf = uncurry I.updateIx <$> execute (mkBuffer <$> eBuf)
+          
+          let eInitBuf :: Event ChatCoreBuffer
+              eInitBuf = split (const (I.toList (network ^. netStBuffers)) <$> eInit)
+
+          -- Initializes a `ChatBuffer` object for the given buffer and inserts
+          -- it into a tuple with the buffer name so that it can be put into an
+          -- IxSet.
+          let mkBuffer :: ChatCoreBuffer -> Reactive (ChatBufferName, ChatBuffer)
+              mkBuffer buf = (bufName, ) <$> chatBuffer uName netName bufName
+                                                        (_ccBufferActive buf)
+                                                        bUserNick eBufLine
+                where
+                  eBufLine = filterE (isForBuffer bufName) eRecvLine
+                  bufName = buf ^. ccBufferName
+
+          -- If the given buffer is not already in the buffer list, creates a
+          -- new ChatCoreBuffer structure for it.
+          let mkNewBuf :: ChatBufferName -> Reactive (Maybe ChatCoreBuffer)
+              mkNewBuf bufName = do
+                  exists <- not <$> I.null
+                            <$> I.getEQ bufName
+                            <$> sample bBuffers
+                  return $ if exists then Nothing else Just newBuf
+                where
+                  newBuf = ChatCoreChannelBuffer bufName True
+
+
+          --------------------------------------------------------------------------------
+          -- State
+          --------------------------------------------------------------------------------
+
+          bNetStBuffers <- fmap I.fromList <$> switchList (map bufStateBehavior <$> bBufferList)
+          -- Link the bNetStBuffers behavior to the database.
+          cleanNetStBufs <- execAcidUpdates acid
+                            (SetNetworkBuffers uName netName
+                             <$> updates bNetStBuffers)
+
+          let eNickChange = view (ilArgs . _head) <$> eRecvCmd ICmdNick
+          -- The initial nick on connect is specified in the first argument of RPL_WELCOME.
+          let eInitialNick = view (ilArgs ._head) <$> eRecvCmd (ICmdOther "001")
+
+          bUserNick :: Behavior Nick <- hold "" (eNickChange <> eInitialNick)
 
 
           --------------------------------------------------------------------------------
@@ -180,7 +197,7 @@ chatNetwork uName network acid eClientCmd =
           --------------------------------------------------------------------------------
 
           -- Event for sending a line.
-          let eSendLine = eSendInit <> eJoinInitChans
+          let eSendLine = eSendInit <> eCmdJoinInitChans
                        <> eClientCmdLines
                        <> eSendPong
 
@@ -190,9 +207,9 @@ chatNetwork uName network acid eClientCmd =
                                        ] <$> eConnected)
 
           -- An event which sends IRC commands to join initial channels.
-          let eJoinInitChans = split (snapshot (\_ cmds -> cmds) eConnComplete bInitJoinCmds)
-              bInitJoinCmds = map (joinLine . view ccBufferName) <$> bActiveChans
-              bActiveChans = filter isActiveChannel <$> I.toList <$> bNetStBuffers
+          let eCmdJoinInitChans = joinLine <$> view ccBufferName <$> split eJoinInitChans
+              eJoinInitChans = snapshot (const getActiveChans) eConnComplete bNetStBuffers
+              getActiveChans = filter isActiveChannel . I.toList
               isActiveChannel (ChatCoreChannelBuffer _ True) = True
               isActiveChannel _ = False
 
@@ -218,6 +235,8 @@ chatNetwork uName network acid eClientCmd =
               cleanRecvLnPrnt
               cleanSendLnPrnt
               cleanBufEvtPrnt
+
+        pushInit ()
 
         return $ ChatNetwork
                netName bConnStatus bUserNick bBuffers eCoreEvent clean
