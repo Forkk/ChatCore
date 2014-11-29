@@ -165,7 +165,7 @@ getUser uName = do
 -- | Adds a new user with the given username and password hash.
 addUser :: UserName -> B.ByteString -> Update ChatCoreState ()
 addUser uName passHash =
-    chatCoreUsers %= (insert $ ChatCoreUser uName passHash I.empty)
+    chatCoreUsers %= insert (ChatCoreUser uName passHash I.empty)
 
 -- | Adds the given netSt to the given user.
 -- If a netSt with the same ID exists, it will be replaced.
@@ -185,7 +185,7 @@ updateUserEvt :: (ChatCoreUser -> ChatCoreUser) ->
     UserName -> Update ChatCoreState ()
 updateUserEvt func uName =
     chatCoreUsers %= \users ->
-        let user = fromJust $ getOne $ (users @= uName)
+        let user = fromJust $ getOne (users @= uName)
          in updateIx uName (func user) users
 
 -- }}}
@@ -232,7 +232,7 @@ setNetworkBuffers user net buffers =
 -- Ignored if the given buffer name is not a channel buffer.
 setChanBufferActive :: Bool ->
     ChatBufferName -> ChatNetworkName -> UserName -> Update ChatCoreState ()
-setChanBufferActive active = do
+setChanBufferActive active =
     updateBufferEvt setActive
   where
     setActive (ChatCoreChannelBuffer n _) =
@@ -245,9 +245,9 @@ setChanBufferActive active = do
 -- | Apply a function to the netSt with the given name.
 updateNetworkEvt :: (ChatCoreNetwork -> ChatCoreNetwork) ->
     ChatNetworkName -> UserName -> Update ChatCoreState ()
-updateNetworkEvt func uName netName = (flip updateUserEvt) uName $
+updateNetworkEvt func uName netName = flip updateUserEvt uName $
     usrStNetworks %~ \nets ->
-        let net = fromJust $ getOne $ (nets @= netName)
+        let net = fromJust $ getOne (nets @= netName)
          in updateIx netName (func net) nets
 
 -- | Apply a function to the buffer with the given name.
@@ -255,7 +255,7 @@ updateBufferEvt :: (ChatCoreBuffer -> ChatCoreBuffer) ->
     ChatBufferName -> ChatNetworkName -> UserName -> Update ChatCoreState ()
 updateBufferEvt func bufName = updateNetworkEvt $
     netStBuffers %~ \bufs ->
-        let buf = fromJust $ getOne $ (bufs @= bufName)
+        let buf = fromJust $ getOne (bufs @= bufName)
          in updateIx bufName (func buf) bufs
 
 -- }}}
