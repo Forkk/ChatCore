@@ -1,12 +1,17 @@
 -- | The user module, for user logic.
-module ChatCore.ChatUser where
+module ChatCore.ChatUser
+    ( ChatUser (..)
+    , chatUserName
+    , bUserNetworks
+    , bUserClients
+
+    , chatUser
+    ) where
 
 import Control.Applicative
 import Control.Lens
 import Control.Monad
-import Crypto.PasswordStore
 import Data.Acid
-import qualified Data.ByteString as B
 import qualified Data.IxSet as I
 import qualified Data.Map as M
 import Data.Monoid
@@ -31,94 +36,20 @@ $(makeLenses ''ChatUser)
 
 
 --------------------------------------------------------------------------------
--- Reactive
+-- Networks
 --------------------------------------------------------------------------------
 
--- | Set up behaviors and events for the given user.
-chatUser :: ChatCoreUser
-         -> AcidState ChatCoreState
-         -> Event RemoteClient -- ^ New clients for this user.
-         -> IO ChatUser
-chatUser user acid eNewConn = do
-    (eNewNetwork, pushNewNetwork) <- sync newEvent
-    let uname = user ^. usrStName
-    chatUsr <- sync $ do
-      rec
-        let initNet netSt = chatNetwork uname netSt acid
-                            $ filterE (isForNetwork (netSt ^. netStName)) eClientCmd
-            eAddNetwork = I.insert <$> executeAsyncIO (initNet <$> eNewNetwork)
-
-        bNetworks <- accum I.empty eAddNetwork
-        let bNetworkList = I.toList <$> bNetworks
-        -- bNetworkInfos <- switch (sequenceA <$> map getNetworkInfo <$> bNetworkList)
-
-        -- Password
-        -- let eSetPassword = never
-        -- bPassHash <- hold (user ^. usrStPassword) $
-        --              executeSyncIO (hashPassword <$> eSetPassword)
-
-
-        let eCoreEvent = switchMergeWith (view eNetworkCoreEvt) bNetworkList
-
-
-        --------------------------------------------------------------------------------
-        -- Remote Clients
-        --------------------------------------------------------------------------------
-
-        let clientCtx = RemoteClientCtx uname eCoreEvent bNetworks
-
-        -- Event to add new clients.
-        eNewClient <- tagIds $ executeAsyncIO (($ clientCtx) <$> eNewConn)
-        let eDoAddClient = uncurry M.insert <$> eNewClient
-            eDoRemoveClient = M.delete <$> eClientDisconnectId
-
-        -- Add new clients to the list.
-        bClientMap <- accum M.empty (eDoAddClient <> eDoRemoveClient)
-        let bClients = map snd <$> M.toList <$> bClientMap
-
-        -- Receive client commands from all clients.
-        let eClientCmd = switchMergeWith rcCommands bClients
-        
-        -- Remote client disconnect events.
-        let eClientDisconnectId :: Event Int
-            eClientDisconnectId = fst <$> eClientDisconnect
-            eClientDisconnect = switchMergeWith mkDCEvent (M.toList <$> bClientMap)
-            mkDCEvent (cid, client) = const (cid, client) <$> rcDisconnect client
-      
-      
-      --------------------------------------------------------------------------------
-      -- Listens and Cleanup
-      --------------------------------------------------------------------------------
-        
-      cleanNCPrint <- listen (fst <$> eNewClient) $ \cid ->
-                                putStrLn ("New client with ID: " <> show cid)
-
-      cleanClientDC <- listen eClientDisconnect $ \(cid, client) -> do
-                                putStrLn ("Client " <> show cid <> " disconnected.")
-                                -- FIXME: If the client's cleanup action calls sync,
-                                -- this will lock up.
-                                cleanupRemoteClient client
-
-      -- FIXME: Removing this line causes core events to not be received by clients.
-      _ <- listen eCoreEvent print
-
-      let bCleanupNetworks = map cleanupChatNetwork <$> bNetworkList
-          cleanup = do
-              cleanNCPrint
-              cleanClientDC
-              -- Run cleanup actions for all the networks.
-              join (sequence_ <$> sync (sample bCleanupNetworks))
-      return $ ChatUser uname bNetworks bClients cleanup
-
-    -- Push an add network event for all the networks.
-    mapM_ (sync . pushNewNetwork) $ I.toList (user ^. usrStNetworks)
-    return chatUsr
-
-
--- | Starts a new remote client.
-userClient :: RemoteClientCtx -> RemoteClient -> IO RemoteClientInfo
-userClient ctx client = client ctx
-
+behNetworks :: AcidState ChatCoreState
+            -> ChatUserName
+            -> Event ChatCoreNetwork
+            -> Event ClientCommand
+            -> Reactive (Behavior (I.IxSet ChatNetwork))
+behNetworks acid uName eNewNetwork eClientCmd =
+    accum I.empty eDoAddNetwork
+  where
+    initNet netSt = chatNetwork uName netSt acid
+                    $ filterE (isForNetwork (netSt ^. netStName)) eClientCmd
+    eDoAddNetwork = I.insert <$> executeAsyncIO (initNet <$> eNewNetwork)
 
 -- | True if the given client command should be handled by the given network.
 isForNetwork :: ChatNetworkName -> ClientCommand -> Bool
@@ -128,6 +59,91 @@ isForNetwork netName (PartChannel netName' _ _) = netName == netName'
 -- isForNetwork _ _ = False
 
 
--- | Hashes and salts the given password.
-hashPassword :: B.ByteString -> IO B.ByteString
-hashPassword pass = makePassword pass 24
+--------------------------------------------------------------------------------
+-- Clients
+--------------------------------------------------------------------------------
+
+behRemoteClients :: ChatUserName
+                 -> Event RemoteClient
+                 -> Behavior (I.IxSet ChatNetwork)
+                 -> Event CoreEvent
+                 -> Reactive (Behavior (M.Map Int RemoteClientInfo), IO ())
+behRemoteClients uName eNewConn bNetworks eCoreEvent = do
+    rec
+      -- Fires when a client disconnects.
+      let eClientDisconnect :: Event (Int, RemoteClientInfo)
+          eClientDisconnect = switchMergeWith mkDCEvent (M.toList <$> bClientMap)
+
+      -- Fires the ID of a client when it disconnects.
+      let eClientDisconnectId :: Event Int
+          eClientDisconnectId = fst <$> eClientDisconnect
+
+      -- Event streams of functions to add and remove clients.
+      let eDoAddClient = uncurry M.insert <$> eNewClient
+          eDoRemoveClient = M.delete <$> eClientDisconnectId
+
+      -- Starts new clients and fires events for each client started.
+      eNewClient <- tagIds $ executeAsyncIO (($ clientCtx) <$> eNewConn)
+
+      -- The client list is a map that is modified by functions coming out of the
+      -- `eDo(Add|Remove)Client` events.
+      bClientMap <- accum M.empty (eDoAddClient <> eDoRemoveClient)
+
+    -- Cleanup clients when they disconnect.
+    clean <- listen eClientDisconnect cleanClient
+
+    return (bClientMap, clean)
+  where
+    clientCtx = RemoteClientCtx uName eCoreEvent bNetworks
+    -- | Fires an event when the given client disconnects.
+    mkDCEvent :: (Int, RemoteClientInfo) -> Event (Int, RemoteClientInfo)
+    mkDCEvent (cid, client) = const (cid, client) <$> rcDisconnect client
+    -- | Runs cleanup actions for the given client.
+    cleanClient :: (Int, RemoteClientInfo) -> IO ()
+    cleanClient (cid, client) = do
+        putStrLn ("Client " <> show cid <> " disconnected.")
+        -- FIXME: If the client's cleanup action calls sync, this will lock up.
+        cleanupRemoteClient client
+
+
+--------------------------------------------------------------------------------
+-- Main
+--------------------------------------------------------------------------------
+
+-- | Set up behaviors and events for the given user.
+chatUser :: ChatCoreUser
+         -> AcidState ChatCoreState
+         -> Event RemoteClient -- ^ New clients for this user.
+         -> Reactive ChatUser
+chatUser user acid eNewConn = do
+    (eNewNetwork, pushNewNetwork) <- newEvent
+    let uName = user ^. usrStName
+    rec
+      -- Networks.
+      bNetworks <- behNetworks acid uName eNewNetwork eClientCmd
+      let bNetworkList = I.toList <$> bNetworks
+
+      -- Receive core events from networks.
+      let eCoreEvent = switchMergeWith (view eNetworkCoreEvt) bNetworkList
+
+
+      -- Remote clients.
+      (bClients, cleanClients) <- behRemoteClients uName eNewConn bNetworks eCoreEvent
+      let bClientList = map snd <$> M.toList <$> bClients
+
+      -- Receive client commands from all clients.
+      let eClientCmd = switchMergeWith rcCommands bClientList
+    
+    -- FIXME: Removing this line causes core events to not be received by clients.
+    _ <- listen eCoreEvent print
+
+    let bCleanupNetworks = map cleanupChatNetwork <$> bNetworkList
+        cleanup = do
+            cleanClients
+            -- Run cleanup actions for all the networks.
+            join (sequence_ <$> sync (sample bCleanupNetworks))
+
+    -- Push an add network event for all the networks.
+    mapM_ pushNewNetwork $ I.toList (user ^. usrStNetworks)
+    return $ ChatUser uName bNetworks bClientList cleanup
+

@@ -97,7 +97,7 @@ core acid = do
       --------------------------------------------------------------------------------
       
       let initUser usrSt = chatUser usrSt acid $ eUserNewClient (usrSt ^. usrStName)
-          eAddUser = (:) <$> executeAsyncIO (initUser <$> eNewUser)
+          eAddUser = (:) <$> execute (initUser <$> eNewUser)
       bUsers <- accum [] eAddUser
     return ()
 
