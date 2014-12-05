@@ -35,6 +35,12 @@ switchMergeWith :: (a -> Event b) -> Behavior [a] -> Event b
 switchMergeWith func behs = switchE (foldr merge never <$> map func <$> behs)
 
 
+-- | Combines `snapshot` and `filterE`.
+snapFilterE :: (a -> b -> Bool) -> Event a -> Behavior b -> Event a
+snapFilterE func evt beh = filterJust $ snapshot filt evt beh
+  where filt e b = if func e b then Just e else Nothing
+
+
 -- | Like the `over` function from @Lens@, but works on functors.
 overF :: (Functor f) => Iso s t a b -> (f a -> f b) -> f s -> f t
 overF i = over (mapping i)

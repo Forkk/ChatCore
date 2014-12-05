@@ -5,25 +5,18 @@ import Control.Applicative
 import Control.Concurrent
 import Control.Lens
 import Control.Monad
-import Crypto.PasswordStore
 import Data.Acid
-import qualified Data.IxSet as I
-import qualified Data.Text as T
-import Data.Traversable hiding (mapM, sequence)
 import qualified Data.Map as M
+import qualified Data.Text as T
 import FRP.Sodium
 import FRP.Sodium.IO
-import FRP.Sodium.Internal (listenTrans)
 import Network
 
 import ChatCore.ChatUser
-import ChatCore.ChatNetwork
-import ChatCore.Events
 import ChatCore.Protocol
 import ChatCore.Protocol.JSON
 import ChatCore.State
 import ChatCore.Types
-import ChatCore.Util
 import ChatCore.Util.FRP
 
 connListeners :: [IO ConnListener]
@@ -33,7 +26,88 @@ connListeners =
 
 
 --------------------------------------------------------------------------------
--- Reactive
+-- Clients
+--------------------------------------------------------------------------------
+
+
+-- | Creates an event for when a client attaches to the given user.
+evtUserClientAttach :: ChatUserName
+                    -> Behavior (M.Map Int ActivePendingClient)
+                    -> Event RemoteClient
+evtUserClientAttach uName bPendingClientMap =
+    snd <$> eAttach
+  where
+    eAttach = filterE ((==uName) . fst) $ switchMerge bAttachEvts
+    bAttachEvts = map (apcAttach . snd) <$> M.toList <$> bPendingClientMap
+
+
+-- | Creates a behavior which holds a list of pending clients.
+behPendingClients :: AcidState ChatCoreState
+                  -> [ConnListener]
+                  -> Reactive (Behavior (M.Map Int ActivePendingClient))
+behPendingClients acid listeners = do
+  rec
+    eNewPending <- evtNewPending acid $ foldr (merge . clNewConn) never listeners
+
+    -- A stream of events which insert or remove pending clients in the pending
+    -- client list.
+    let eDoAddPending = uncurry M.insert <$> eNewPending
+        -- Remove any client that requests attachment. To do this, we just take
+        -- the first element of each attach request tuple.
+        eDoRemovePending = M.delete <$> evtRemovePending bPendingClients
+
+    -- A map of IDs to attach request event streams for all pending clients.
+    bPendingClients <- accum M.empty (merge eDoAddPending eDoRemovePending)
+  return bPendingClients
+
+
+-- | An event which fires when a pending client should be removed.
+evtRemovePending :: Behavior (M.Map Int ActivePendingClient)
+                 -> Event Int
+evtRemovePending bPendingClients =
+    -- Map eRemoveEvt over all the pending clients and merge the resulting event
+    -- streams.
+    switchMerge (map eRemoveEvt <$> M.toList <$> bPendingClients)
+  where
+    -- Creates a remove event stream for a single client.
+    eRemoveEvt :: (Int, ActivePendingClient) -> Event Int
+    eRemoveEvt (cid, client) = once (const cid <$> apcAttach client)
+
+
+-- | Creates an event that fires when a new pending client shows up.
+evtNewPending :: AcidState ChatCoreState
+              -> Event PendingClient
+              -> Reactive (Event (Int, ActivePendingClient))
+evtNewPending acid eNewPending =
+    -- Set up new pending clients and tag them with ID numbers.
+    tagIds $ execute (pendingClient acid <$> eNewPending)
+
+
+
+--------------------------------------------------------------------------------
+-- Users
+--------------------------------------------------------------------------------
+
+
+behUsers :: AcidState ChatCoreState
+         -> Event ChatCoreUser -- ^ Event to fire to add a new user.
+         -> Behavior (M.Map Int ActivePendingClient)
+         -> Reactive (Behavior [ChatUser], IO ())
+behUsers acid eNewUser bPendingClients = do
+    let eDoAddUser = (:) <$> execute (initUser <$> eNewUser)
+    bUsers <- accum [] eDoAddUser
+    let clean = do
+          usrs <- sync $ sample bUsers
+          mapM_ cleanupChatUser usrs
+    return (bUsers, clean)
+  where
+    initUser usrSt =
+        chatUser usrSt acid $ evtUserClientAttach uName bPendingClients
+      where
+        uName = view usrStName usrSt
+
+--------------------------------------------------------------------------------
+-- Main
 --------------------------------------------------------------------------------
 
 -- | The core of Chat Core.
@@ -41,108 +115,65 @@ core :: AcidState ChatCoreState -> IO ()
 core acid = do
   (eNewUser, pushNewUser) <- sync newEvent
   connLs <- sequence connListeners
-  sync $ do
+  cleanup <- sync $ do
     rec
-      --------------------------------------------------------------------------------
-      -- Clients
-      --------------------------------------------------------------------------------
+      bPendingClients <- behPendingClients acid connLs
+      (_, clean) <- behUsers acid eNewUser bPendingClients
       
-      -- TODO: Maybe find a simpler way to implement this system. It's quite
-      -- complicated as is.
-      
-      -- An event for new pending clients. We get this by just merging all of
-      -- the connection listeners' new client events.
-      let eNewConn = foldr merge never (clNewConn <$> connLs)
-      
-      -- This event fires after a new pending client thread is started.
-      let eNewPending = executeAsyncIO (pendingClient acid <$> eNewConn)
-      -- Tag pending connections with IDs.
-      eNewPendingWithId' <- tagIds eNewPending
-      -- Copy those IDs into the attach event streams.
-      -- Event (Int, Event (Maybe (..))) -> Event (Int, Event (Int, Maybe (..)))
-      let eNewPendingWithId = copyPendingIdInto <$> eNewPendingWithId'
-          copyPendingIdInto :: (Int, Event (Maybe (ChatUserName, RemoteClient)))
-                            -> (Int, Event (Int, Maybe (ChatUserName, RemoteClient)))
-          copyPendingIdInto (pid, eAttach) = (pid, (pid, ) <$> eAttach)
-      
-      -- A stream of events which insert or remove pending clients in the pending
-      -- client list.
-      let eAddPending = uncurry M.insert <$> eNewPendingWithId
-          -- Remove any client that requests attachment. To do this, we just take
-          -- the first element of each attach request tuple.
-          eRemovePending = M.delete <$> fst <$> eAttachRequest
-      
-      -- A map of IDs to attach request event streams for all pending clients.
-      bAttachEventMap <- accum M.empty (merge eAddPending eRemovePending)
-      
-      -- eAttachRequest fires any time a pending client requests to attach to a
-      -- user. The second element of the tuples it fires will be Nothing if the
-      -- attach request failed. The first element indicates the ID of the pending
-      -- client.
-      let eAttachRequest :: Event (Int, Maybe (ChatUserName, RemoteClient))
-          eAttachRequest = switchE bAttachEvent
-          bAttachEvent = foldr merge never <$> bAttachEventList
-          bAttachEventList = map snd <$> M.toList <$> bAttachEventMap
-      
-      -- An event stream of only successful attachment requests. This stream does
-      -- not include the pending client's ID.
-      let eAttachSuccess :: Event (ChatUserName, RemoteClient)
-          eAttachSuccess = filterJust (snd <$> eAttachRequest)
-      
-      -- An event stream of clients to attach to the given user.
-      let eUserNewClient uname = snd <$> filterE ((==uname) . fst) eAttachSuccess
-      
-      --------------------------------------------------------------------------------
-      -- Users
-      --------------------------------------------------------------------------------
-      
-      let initUser usrSt = chatUser usrSt acid $ eUserNewClient (usrSt ^. usrStName)
-          eAddUser = (:) <$> execute (initUser <$> eNewUser)
-      bUsers <- accum [] eAddUser
-    return ()
+    return clean
 
   -- Push an add user event for all the users.
   users <- getUsers acid
   mapM_ (sync . pushNewUser) users
   -- The main thread becomes useless at this point.
   _ <- forever $ threadDelay (1000 * 1000)
+  cleanup
   return ()
 
 runCore :: IO ()
 runCore = withLocalState initialChatCoreState core
 
 
--- | Maps a `PendingClient` event stream to an event stream of events that fire
--- when a client should be attached to a user.
+
+--------------------------------------------------------------------------------
+-- Running Pending Clients
+--------------------------------------------------------------------------------
+
+-- | Represents an active pending client.
+data ActivePendingClient = ActivePendingClient
+    { apcAttach :: Event (ChatUserName, RemoteClient) -- ^ Fires when the client attaches.
+    , apcRemove :: Event () -- ^ Fires when the client should be removed.
+    , apcAuthed :: Behavior Bool
+    }
+
+
+-- | Maps a `PendingClientInfo` event stream to an event stream of events that
+-- fire when a client should be attached to a user.
 pendingClient :: AcidState ChatCoreState
               -> PendingClient
-              -> IO (Event (Maybe (ChatUserName, RemoteClient)))
+              -> Reactive ActivePendingClient
 pendingClient acid client = do
-  (bAuthed, pushAuthed) <- sync $ newBehavior False
+  rec
+    let clientInfo = client $ PendingClientCtx bAuthed
 
-  let clientCtx = PendingClientCtx bAuthed
-  clientInfo <- client clientCtx
+    let checkAuth :: (ChatUserName, Password) -> IO (Maybe ChatUserName)
+        checkAuth (uname, passwd) = do
+            result <- authClient acid (uname, passwd)
+            return $ if result then Just uname else Nothing
+  
+    let eAuthResult :: Event (Maybe ChatUserName)
+        eAuthResult = executeAsyncIO (checkAuth <$> pcRequestAuth clientInfo)
+    let eAttach = once $ pcAttachUser clientInfo
 
-  let checkAuth :: (ChatUserName, Password) -> IO (Maybe ChatUserName)
-      checkAuth (uname, passwd) = do
-          result <- authClient acid (uname, passwd)
-          return $ if result then Just uname else Nothing
+    bAuthedUser <- hold "" $ filterJust eAuthResult
+    let bAuthed = not <$> T.null <$> bAuthedUser
+  
+  return ActivePendingClient
+         { apcAttach = snapshot (flip (,)) eAttach bAuthedUser
+         , apcRemove = void eAttach
+         , apcAuthed = bAuthed
+         }
 
-  let eAuthResult :: Event (Maybe ChatUserName)
-      eAuthResult = executeAsyncIO (checkAuth <$> pcRequestAuth clientInfo)
-  let eAttach = once $ pcAttachUser clientInfo
-
-  bAuthedUser <- sync $ hold "" $ filterJust eAuthResult
-  -- TODO: unlisten
-  -- TODO: Avoid use of listenTrans. For some reason, rec causes this code to
-  -- lock up. I suspect the problem could show up again, so actually fixing it
-  -- would be nice.
-  sync $ listenTrans (updates bAuthedUser) $ const $ pushAuthed True
-
-  let mkRetVal rc uname = if T.null uname
-                             then Nothing
-                             else Just (uname, rc)
-  return $ snapshot mkRetVal eAttach bAuthedUser
 
 -- | Verifies the given authentication request for the given client.
 authClient :: AcidState ChatCoreState -> (ChatUserName, Password) -> IO Bool

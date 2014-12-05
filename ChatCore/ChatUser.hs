@@ -49,7 +49,7 @@ behNetworks acid uName eNewNetwork eClientCmd =
   where
     initNet netSt = chatNetwork uName netSt acid
                     $ filterE (isForNetwork (netSt ^. netStName)) eClientCmd
-    eDoAddNetwork = I.insert <$> executeAsyncIO (initNet <$> eNewNetwork)
+    eDoAddNetwork = I.insert <$> execute (initNet <$> eNewNetwork)
 
 -- | True if the given client command should be handled by the given network.
 isForNetwork :: ChatNetworkName -> ClientCommand -> Bool

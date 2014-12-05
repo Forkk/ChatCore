@@ -44,10 +44,9 @@ jsonConnListener port = do
     sock <- listenOn port
     -- Accept connections.
     -- TODO: Close this thread when the program closes.
-    forkIO $ forever $ do
-        hand <- acceptConnection sock
-        sync $ pushNewConn hand
-
+    _ <- forkIO $ forever $ do
+                          client <- acceptConnection sock
+                          sync $ pushNewConn client
     return ConnListener
                { clNewConn = eNewConn
                , clName = "JSON Core Protocol"
@@ -62,24 +61,25 @@ acceptConnection sock = do
     -- Accept the sock.
     (hand, _, _) <- liftIO $ accept sock
     -- Create a pending connection from the handle.
-    return $ pendingClient hand
+    pendingClient hand
 
 
 -- | Handles authentication an initialization for the JSON protocol.
-pendingClient :: Handle -> PendingClientCtx -> IO PendingClientInfo
-pendingClient hand (PendingClientCtx bAuthed) = do
-    putStrLn "JSON remote client pending."
+pendingClient :: Handle -> IO (PendingClientCtx -> PendingClientInfo)
+pendingClient hand = do
     (eRecvLine, pushRecvLine) <- sync newEvent
     (eDisconnect, pushDisconnect) <- sync newEvent
-    -- TODO: Handle cleanup.
+    -- TODO: Clean up this thread.
     _ <- forkIO $ listenLines (sync . pushRecvLine)
                               (sync $ pushDisconnect ())
                               hand
-    rec
+    putStrLn "JSON remote client pending."
+    sync $ listen eRecvLine print
+    return $ \(PendingClientCtx bAuthed) ->
       let eReqAuth = const ("Forkk", "testpass") <$> eRecvLine
           eAttach = const (remoteClient hand eRecvLine eDisconnect)
                     <$> gate eRecvLine bAuthed
-    return $ PendingClientInfo eReqAuth eAttach
+          in PendingClientInfo eReqAuth eAttach
 
 
 remoteClient :: Handle -> Event B.ByteString -> Event ()

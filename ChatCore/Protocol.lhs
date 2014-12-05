@@ -78,7 +78,7 @@ data PendingClientInfo = PendingClientInfo
     , pcAttachUser :: Event RemoteClient
     }
 
-type PendingClient = PendingClientCtx -> IO PendingClientInfo
+type PendingClient = PendingClientCtx -> PendingClientInfo
 
 \end{code}
 

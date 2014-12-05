@@ -1,4 +1,18 @@
-module ChatCore.ChatBuffer where
+module ChatCore.ChatBuffer
+    ( ChatBuffer (..)
+    , bufferName
+    , chatBufLog
+    , bufferEvent
+    , bufferUsers
+    , bufferActive
+
+    , chatBuffer
+
+    , isForBuffer
+
+    , getBufLogLines
+    , bufStateBehavior
+    ) where
 
 import Control.Applicative
 import Control.Lens
@@ -36,52 +50,81 @@ data ChatBuffer = ChatBuffer
 $(makeLenses ''ChatBuffer)
 
 
--- | A chat buffer with the given input and output events.
-chatBuffer :: ChatUserName -> ChatNetworkName -> ChatBufferName
-           -> Bool -- ^ True if the buffer is active.
-           -> Behavior Nick -- ^ The user's nick.
-           -> Event IRCLine -- ^ Buffer-related IRC messages.
-           -> Reactive ChatBuffer
-chatBuffer uName netName bufName bufActive bNick eRecvLine = do
-  rec
-    -- Function which creates an event which receives IRC lines with the given command.
-    let eRecvCmd :: IRCCommand -> Event IRCLine
-        eRecvCmd = filterCmd eRecvLine
 
-    let eBufEvent :: Event BufferEvent
-        eBufEvent = eLineBufEvent
-    
-    -- Buffer events derived directly from eRecvLine.
-    let eLineBufEvent = filterJust (bufEventForLine <$> eRecvLine)
-    
-    let eSelfJoin = filterFirstArg $ filterSelfSource bNick $ eRecvCmd ICmdJoin
-        eSelfPart = filterFirstArg $ filterSelfSource bNick $ eRecvCmd ICmdPart
+--------------------------------------------------------------------------------
+-- Buffer Events
+--------------------------------------------------------------------------------
 
-    bActive <- hold bufActive (  (const True  <$> eSelfJoin)
-                              <> (const False <$> eSelfPart))
-    
-    --------------------------------------------------------------------------------
-    -- Users
-    --------------------------------------------------------------------------------
+-- | Creates a stream of buffer events.
+evtBufferEvent :: Event IRCLine -- ^ Received IRC lines.
+               -> Reactive (Event BufferEvent)
+evtBufferEvent eRecvLine = 
+    (return . foldr merge never) =<< sequence
+    [ return $ evtLineBufEvt eRecvLine ]
+
+
+-- | Buffer events derived directly from received IRC lines.
+evtLineBufEvt :: Event IRCLine
+              -> Event BufferEvent
+evtLineBufEvt eRecvLine = filterJust (bufEventForLine <$> eRecvLine)
+
+-- | Returns `Just BufferEvent` if the given line translates directly into a
+-- buffer event.
+bufEventForLine :: IRCLine -> Maybe BufferEvent
+bufEventForLine (IRCLine (Just source) ICmdPrivmsg [_] (Just msg)) =
+    Just $ UserMessage source msg
+bufEventForLine (IRCLine (Just source) ICmdNotice [_] (Just msg)) =
+    Just $ NoticeMessage source msg
+bufEventForLine _ = Nothing
+
+
+
+--------------------------------------------------------------------------------
+-- State
+--------------------------------------------------------------------------------
+
+behBufActive :: Bool
+             -> Behavior Nick
+             -> Event IRCLine
+             -> Reactive (Behavior Bool)
+behBufActive bufActive bNick eRecvLine =
+    hold bufActive ( (const True <$> eSelfJoin) <> (const False <$> eSelfPart))
+  where
+    eSelfJoin = filterFirstArg $ filterSelfSource bNick $ filterCmd eRecvLine ICmdJoin
+    eSelfPart = filterFirstArg $ filterSelfSource bNick $ filterCmd eRecvLine ICmdPart
+
+
+
+--------------------------------------------------------------------------------
+-- User List
+--------------------------------------------------------------------------------
+
+behBufUsers :: Event IRCLine
+            -> Reactive (Behavior [Nick])
+behBufUsers eRecvLine = do
+    eSetNames <- evtNewNamesList eRecvLine
 
     -- Behavior with a list of users in the buffer.
-    bUsers <- accum [] (eAddUser <> eRemoveUser <> eClearUsers <> eAddUsers)
-    
-    let eJoin = UserJoin <$> filterJust (preview _UserSource
-                                         <$> filterSource (eRecvCmd ICmdJoin))
+    accum [] (eAddUser <> eRemoveUser <> (const <$> eSetNames))
+  where
+    cmdSrc cmd = filterSource (filterCmd eRecvLine cmd)
+    eJoin = UserJoin <$> filterJust (preview _UserSource <$> cmdSrc ICmdJoin)
 
-        ePart = filterJust $ flip fmap (eRecvCmd ICmdPart) $
-                \line -> UserPart
-                         <$> (line ^? ilSource . _Just . _UserSource)
-                         <*> pure (line ^. ilBody)
+    ePart = filterJust $ flip fmap (filterCmd eRecvLine ICmdPart) $
+            \line -> UserPart
+                     <$> (line ^? ilSource . _Just . _UserSource)
+                     <*> pure (line ^. ilBody)
 
-    let eAddUser = (:) <$> _iuNick <$> joiningUser <$> eJoin
-        eRemoveUser = (\nick -> filter (/=nick))
-                      <$> _iuNick <$> partingUser <$> ePart
-        eClearUsers = const <$> eNamesBegin
-        eAddUsers = (++) <$> eNamesContinued
+    eAddUser = (:) <$> _iuNick <$> joiningUser <$> eJoin
+    eRemoveUser = (\nick -> filter (/=nick))
+                  <$> _iuNick <$> partingUser <$> ePart
 
-    -------- NAMES List --------
+
+-- | Event that fires when a new NAMES list is received.
+evtNewNamesList :: Event IRCLine
+                -> Reactive (Event [Nick])
+evtNewNamesList eRecvLine = do
+  rec
     -- True if we're receiving names. If this is False and we get a RPL_NAMES
     -- message, the user list is cleared. This is set to false when the names
     -- list ends.
@@ -91,36 +134,57 @@ chatBuffer uName netName bufName bufActive bNick eRecvLine = do
     -- TODO: Handle @ and ! prefixes for ops and voiced people.
     let eNamesList = filterJust (fmap T.words
                                  <$> preview (ilBody . _Just)
-                                 <$> eRecvCmd (ICmdOther "353"))
+                                 <$> filterCmd eRecvLine (ICmdOther "353"))
         eNamesBegin = gate eNamesList (not <$> bReceivingNames)
         eNamesContinued = gate eNamesList bReceivingNames
-        eNamesEnd = void $ eRecvCmd $ ICmdOther "366"
-    
-    
-    --------------------------------------------------------------------------------
-    -- Logging
-    --------------------------------------------------------------------------------
+        eNamesEnd = void $ filterCmd eRecvLine $ ICmdOther "366"
 
-    -- The chat log for this buffer.
-    let bufLog = mkBufferLog defLogPath $ BufferLogId uName netName bufName
+    let eDoStartNames = const <$> eNamesBegin
+        eDoAddNames = (++) <$> eNamesContinued
+
+    bNewNamesList <- accum [] (eDoStartNames <> eDoAddNames)
+  return $ execute (const (sample bNewNamesList) <$> eNamesEnd)
+
+
+
+--------------------------------------------------------------------------------
+-- Logging
+--------------------------------------------------------------------------------
+
+-- | Sets up a listener to log buffer events.
+setupBufLog :: ChatUserName -> ChatNetworkName -> ChatBufferName
+            -> Event BufferEvent -> Reactive (BufferLog, IO ())
+setupBufLog uName netName bufName eBufEvent = do
+  -- The chat log for this buffer.
+  let bufLog = mkBufferLog defLogPath $ BufferLogId uName netName bufName
 
   -- Write buffer events to the log.
-  cleanupLogListen <- listen eBufEvent $
-                      \evt -> do
+  clean <- listen eBufEvent $ \evt -> do
                         now <- getCurrentTime
                         writeBufferLog bufLog $ BufLogLine now evt
-
-  return $ ChatBuffer bufName bufLog eBufEvent bUsers bActive cleanupLogListen
-
+  return (bufLog, clean)
 
 
 
-bufEventForLine :: IRCLine -> Maybe BufferEvent
-bufEventForLine (IRCLine (Just source) ICmdPrivmsg [_] (Just msg)) =
-    Just $ UserMessage source msg
-bufEventForLine (IRCLine (Just source) ICmdNotice [_] (Just msg)) =
-    Just $ NoticeMessage source msg
-bufEventForLine _ = Nothing
+--------------------------------------------------------------------------------
+-- Main
+--------------------------------------------------------------------------------
+
+-- | A chat buffer with the given input and output events.
+chatBuffer :: ChatUserName -> ChatNetworkName -> ChatBufferName
+           -> Bool -- ^ True if the buffer is active.
+           -> Behavior Nick -- ^ The user's nick.
+           -> Event IRCLine -- ^ Buffer-related IRC messages.
+           -> Reactive ChatBuffer
+chatBuffer uName netName bufName bufActive bNick eRecvLine = do
+  rec
+    eBufEvent <- evtBufferEvent eRecvLine
+    bActive <- behBufActive bufActive bNick eRecvLine
+    bUsers <- behBufUsers eRecvLine
+    (bufLog, cleanup) <- setupBufLog uName netName bufName eBufEvent
+
+  return $ ChatBuffer bufName bufLog eBufEvent bUsers bActive cleanup
+
 
 
 -- | True if the given IRC line should be handled by the buffer with the given name.
