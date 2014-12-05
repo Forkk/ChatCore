@@ -65,11 +65,11 @@ mkKE :: (EnumKey k) =>
 mkKE typeName' otherM' entries' gens = do
     let typeName = mkName typeName'
     -- Make the name for the "other" data constructor if we need to.
-    let otherM = maybe (Nothing) (\n -> Just $ mkName n) otherM'
+    let otherM = fmap mkName otherM'
     -- Generate entry def objects.
     let entries = map mkEntryDef entries'
     -- Get the key type.
-    keyType <- ConT <$> (getTypeName $ edKey $ head entries)
+    keyType <- ConT <$> getTypeName (edKey $ head entries)
     concat <$> mapM (\gen -> gen typeName otherM keyType entries) gens
   where
     mkEntryDef (name', key) = EntryDef (mkName name') key
@@ -160,11 +160,11 @@ mkDataDec name otherM cType entries = do
 -- "other" type constructor with the given name.
 mkDataCons :: (EnumKey k) => Maybe Name -> Type -> [EntryDef k] -> Q [Con]
 
-mkDataCons otherM cType ((EntryDef name _) : otherDefs) =
-    ((NormalC name []) :) <$> mkDataCons otherM cType otherDefs
+mkDataCons otherM cType (EntryDef name _ : otherDefs) =
+    (NormalC name [] :) <$> mkDataCons otherM cType otherDefs
 
 mkDataCons (Just name) cType [] =
-    return $ (NormalC name [(IsStrict, cType)]) : []
+    return [NormalC name [(IsStrict, cType)]]
 
 mkDataCons Nothing _ [] = return []
 
@@ -190,7 +190,7 @@ mkK2EOtherC :: Name -> Q Clause
 mkK2EOtherC name = do
     valVar <- newName "val"
     let body = NormalB $ AppE (ConE name) (VarE valVar)
-    return $ Clause [VarP valVar] (body) []
+    return $ Clause [VarP valVar] body []
 
 -- }}}
 

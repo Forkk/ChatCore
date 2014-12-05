@@ -8,7 +8,7 @@ First, the module definition and imports.
 
 \begin{code}
 
-{-# LANGUAGE RankNTypes, MultiParamTypeClasses, FunctionalDependencies #-}
+{-# LANGUAGE RankNTypes, MultiParamTypeClasses #-}
 module ChatCore.Protocol where
 
 import Control.Applicative

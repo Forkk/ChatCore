@@ -1,12 +1,7 @@
 module ChatCore.IRC
-    ( module ChatCore.IRC.Actions
-    , module ChatCore.IRC.Commands
-    , module ChatCore.IRC.Connection
-    , module ChatCore.IRC.Line
+    ( module IRC
     ) where
 
-import ChatCore.IRC.Actions
-import ChatCore.IRC.Commands
-import ChatCore.IRC.Connection
-import ChatCore.IRC.Line
-
+import ChatCore.IRC.Actions as IRC
+import ChatCore.IRC.Commands as IRC
+import ChatCore.IRC.Connection as IRC

@@ -7,8 +7,8 @@ import ChatCore.IRC.Connection
 import ChatCore.Types
 
 pongLine :: Maybe T.Text -> IRCLine
-pongLine host =
-    IRCLine Nothing ICmdPong [] host
+pongLine =
+    IRCLine Nothing ICmdPong []
 
 nickLine :: Nick -> IRCLine
 nickLine nick =

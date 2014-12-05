@@ -158,8 +158,8 @@ lineToByteString line = BL.toStrict $ TL.encodeUtf8 $ TL.toLazyText $ lineTextBu
 lineTextBuilder :: IRCLine -> TL.Builder
 lineTextBuilder line =
        maybe mempty (\t -> TL.singleton ':' <> t <> TL.singleton ' ') (sourceStr <$> _ilSource line)
-    <> (TL.fromString $ icmdToStr $ _ilCommand line)
-    <> (mconcat $ map spaceAndText $ _ilArgs line)
+    <> TL.fromString (icmdToStr $ _ilCommand line)
+    <> mconcat (map spaceAndText $ _ilArgs line)
     <> maybe mempty (\t -> TL.fromText " :" <> TL.fromText t) (_ilBody line)
   where
     spaceAndText text = TL.singleton ' ' <> TL.fromText text
