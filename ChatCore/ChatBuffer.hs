@@ -75,6 +75,16 @@ bufEventForLine (IRCLine (Just source) ICmdPrivmsg [_] (Just msg)) =
     Just $ UserMessage source msg
 bufEventForLine (IRCLine (Just source) ICmdNotice [_] (Just msg)) =
     Just $ NoticeMessage source msg
+
+bufEventForLine (IRCLine (Just (UserSource user)) ICmdJoin [_] Nothing) =
+    Just $ UserJoin user
+bufEventForLine (IRCLine (Just (UserSource user)) ICmdPart [_] msgM) =
+    Just $ UserPart user msgM
+
+-- TODO: Only send QUIT events for buffers the quitting user is in.
+bufEventForLine (IRCLine (Just (UserSource user)) ICmdQuit _ msgM) =
+    Just $ UserQuit user msgM
+
 bufEventForLine _ = Nothing
 
 
