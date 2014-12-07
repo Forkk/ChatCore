@@ -71,9 +71,9 @@ executable chatcore
     , ChatCore.ChatNetwork
     , ChatCore.ChatBuffer
 
-    -- Core Protocols
-    , ChatCore.Protocol
-    , ChatCore.Protocol.JSON
+    -- Client Protocols
+    , ChatCore.ClientProtocol
+    , ChatCore.ClientProtocol.JSON
 
     -- Types and Data
     , ChatCore.Events

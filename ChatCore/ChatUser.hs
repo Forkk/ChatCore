@@ -20,7 +20,7 @@ import FRP.Sodium.IO
 
 import ChatCore.Events
 import ChatCore.ChatNetwork
-import ChatCore.Protocol
+import ChatCore.ClientProtocol
 import ChatCore.State
 import ChatCore.Types
 import ChatCore.Util.FRP

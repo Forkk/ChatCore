@@ -2,7 +2,7 @@
 -- Core's internal event system through a simple JSON interface.
 -- It's not supported by any client, but it provides a good baseline as well as
 -- a good way to test Chat Core's event system.
-module ChatCore.Protocol.JSON
+module ChatCore.ClientProtocol.JSON
     ( jsonConnListener
     ) where
 
@@ -31,7 +31,7 @@ import System.IO
 import ChatCore.ChatBuffer
 import ChatCore.Events
 import ChatCore.Types
-import ChatCore.Protocol
+import ChatCore.ClientProtocol
 import ChatCore.IRC
 import ChatCore.ChatLog
 

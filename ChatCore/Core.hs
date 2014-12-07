@@ -13,8 +13,8 @@ import FRP.Sodium.IO
 import Network
 
 import ChatCore.ChatUser
-import ChatCore.Protocol
-import ChatCore.Protocol.JSON
+import ChatCore.ClientProtocol
+import ChatCore.ClientProtocol.JSON
 import ChatCore.State
 import ChatCore.Types
 import ChatCore.Util.FRP

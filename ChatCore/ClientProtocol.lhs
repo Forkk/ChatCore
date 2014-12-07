@@ -1,5 +1,5 @@
-Chat Core Protocol System
-=========================
+Chat Core Client Protocol System
+================================
 
 This is a literate Haskell document which aims to describe how Chat Core's
 multi-protocol system works.
@@ -9,7 +9,7 @@ First, the module definition and imports.
 \begin{code}
 
 {-# LANGUAGE RankNTypes, MultiParamTypeClasses #-}
-module ChatCore.Protocol where
+module ChatCore.ClientProtocol where
 
 import Control.Applicative
 import Control.Lens
