@@ -5,7 +5,6 @@ import Control.Applicative
 import Control.Exception.Lifted
 import Control.Monad.State
 import Control.Monad.Reader
-import Control.Monad.Trans.Control
 import Control.Monad.Trans.Maybe
 import Control.Lens hiding (Indexable)
 import Data.Acid
@@ -129,13 +128,10 @@ updateM event = do
     update' (acid :: AcidState (EventState event)) event
 
 
-withLocalState ::
-    ( MonadBaseControl IO m, MonadIO m
-    , IsAcidic s, Typeable s
-    ) =>
-    s -- ^ Initial state
- -> (AcidState s -> m a) -- ^ Function which uses the handle.
- -> m a
+withLocalState :: (IsAcidic s, Typeable s) =>
+                  s -- ^ Initial state
+               -> (AcidState s -> IO a) -- ^ Function which uses the handle.
+               -> IO a
 withLocalState initialState =
     bracket (liftIO $ openLocalState initialState)
             (liftIO . createCheckpointAndClose)
